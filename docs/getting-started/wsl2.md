@@ -46,6 +46,8 @@ Your sites live on the distro's own disk, not in `C:\Users\you`, and the two are
 - **Terminal.** `lerd` works in Windows Terminal from inside a `\\wsl.localhost` folder as well as from a WSL shell.
 - **Browser.** `https://<site>.test` from any Windows browser, with the certificate trusted.
 
+The dashboard's buttons and `lerd open` reach the Windows desktop too: a site opens in your default browser, a folder in Explorer, a terminal as a Windows Terminal tab on your distro's profile, and a file in an editor found on the Windows PATH through its own WSL launcher (Zed's or VS Code's `bin` folder), which opens it over WSL.
+
 Keep projects on the Linux side. A folder under `C:\` works through `/mnt/c`, but file access there is roughly an order of magnitude slower, which composer and npm make obvious; see step 5.
 
 ## 1. Enable systemd inside WSL2

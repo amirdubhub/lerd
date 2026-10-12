@@ -149,10 +149,16 @@ func ResolvedUpstreamDropin(nameservers []string) string {
 // interop still runs the program by its full path; that path comes from
 // wslpath so a custom automount root is honoured.
 func WindowsTool(name string) string {
+	return windowsFile(`C:\Windows\System32\`+name, name)
+}
+
+// windowsFile resolves name on PATH, else the Windows file winPath through
+// wslpath, falling back to the bare name.
+func windowsFile(winPath, name string) string {
 	if p, err := exec.LookPath(name); err == nil {
 		return p
 	}
-	out, err := exec.Command("wslpath", "-u", `C:\Windows\System32\`+name).Output()
+	out, err := exec.Command("wslpath", "-u", winPath).Output()
 	if err != nil {
 		return name
 	}

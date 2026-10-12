@@ -2,8 +2,16 @@
 
 package cli
 
-import "os/exec"
+import (
+	"errors"
+
+	"github.com/geodro/lerd/internal/platform"
+)
 
 func openBrowser(url string) error {
-	return exec.Command("xdg-open", url).Start()
+	cmd := platform.OpenCommand(url)
+	if cmd == nil {
+		return errors.New("no browser opener found; install xdg-utils")
+	}
+	return cmd.Start()
 }

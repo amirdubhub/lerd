@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/geodro/lerd/internal/certs"
+	"github.com/geodro/lerd/internal/config"
 	"github.com/geodro/lerd/internal/wsl"
 	"github.com/spf13/cobra"
 )
@@ -229,4 +230,30 @@ func maskTrayUnit() bool {
 		return false
 	}
 	return exec.Command("systemctl", "--user", "mask", "lerd-tray.service").Run() == nil
+}
+
+// NewWSLTermCmd returns the hidden `lerd wsl:term`, which a Windows Terminal
+// tab opened from the dashboard runs: it decodes the script the tab was handed
+// and runs it with lerd's bin directory on PATH.
+func NewWSLTermCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:          "wsl:term <script>",
+		Hidden:       true,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(_ *cobra.Command, args []string) error {
+			script, err := wsl.DecodeTerminalScript(args[0])
+			if err != nil {
+				return fmt.Errorf("decoding the terminal script: %w", err)
+			}
+			c := exec.Command("sh", "-c", script)
+			c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+			c.Env = append(os.Environ(), "PATH="+config.PathWithBinDir())
+			err = c.Run()
+			if exit, ok := err.(*exec.ExitError); ok {
+				os.Exit(exit.ExitCode())
+			}
+			return err
+		},
+	}
 }
