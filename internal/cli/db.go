@@ -521,26 +521,67 @@ func runDbShell(flagService, flagDatabase string) error {
 		}
 	}
 
-	container := "lerd-" + env.service
-	var cmd *exec.Cmd
-	switch env.connection {
-	case "pgsql", "postgres":
-		cmdArgs := []string{"exec", "--tty", "-i", container, "psql", "-U", env.username}
-		if env.database != "" {
-			cmdArgs = append(cmdArgs, env.database)
-		}
-		cmd = podman.Cmd(cmdArgs...)
-	default:
-		cmdArgs := []string{"exec", "--tty", "-i", container, "mysql", "-u" + env.username, "-p" + env.password}
-		if env.database != "" {
-			cmdArgs = append(cmdArgs, env.database)
-		}
-		cmd = podman.Cmd(cmdArgs...)
-	}
+	cmd := podman.Cmd(dbShellArgs(env, serviceFamily(env.service), isInteractive())...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// dbShellArgs builds the podman exec behind db:shell. The MySQL-family client
+// is picked inside the container, and a pty is asked for only when stdin is a
+// terminal: with one, piped SQL runs and then waits at a prompt forever.
+func dbShellArgs(env *dbEnv, family string, tty bool) []string {
+	args := []string{"exec", "-i"}
+	if tty {
+		args = append(args, "--tty")
+	}
+	args = append(args, "lerd-"+env.service)
+	switch env.connection {
+	case "pgsql", "postgres":
+		args = append(args, "psql", "-U", env.username)
+	default:
+		// Over TCP, like the preset's own commands: a server confined by a host
+		// AppArmor profile listens on a socket its client does not look at.
+		args = append(args, "sh", "-c", execFirstCommand(mysqlClientBinaries(family)), "sh",
+			"-h", "127.0.0.1", "-u"+env.username, "-p"+env.password)
+	}
+	if env.database != "" {
+		args = append(args, env.database)
+	}
+	return args
+}
+
+// serviceFamily is the engine family of a lerd service, or its own name when
+// the family can't be inferred.
+func serviceFamily(svc string) string {
+	if inferred := config.FamilyOfName(svc); inferred != "" {
+		return inferred
+	}
+	return svc
+}
+
+// mysqlClientBinaries orders the MySQL-family clients with the family's own
+// first: MariaDB 11 images ship only mariadb, MySQL images only mysql.
+// mysqlClientError names what the client printed last, which is the reason it
+// failed; the password warning it always prints comes before it.
+func mysqlClientError(err error) error {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return err
+	}
+	lines := strings.Split(strings.TrimSpace(string(exitErr.Stderr)), "\n")
+	if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
+		return fmt.Errorf("%s: %w", last, err)
+	}
+	return err
+}
+
+func mysqlClientBinaries(family string) []string {
+	if family == "mariadb" {
+		return []string{"mariadb", "mysql"}
+	}
+	return []string{"mysql", "mariadb"}
 }
 
 // escapeSQLLiteral makes name safe inside a '...' string literal. PostgreSQL
@@ -572,24 +613,23 @@ func pgDatabaseExistsQuery(name string) string {
 // lands in rather than trusted.
 func databaseExists(svc, name string) (bool, error) {
 	container := "lerd-" + svc
-	family := svc
-	if inferred := config.FamilyOfName(svc); inferred != "" {
-		family = inferred
-	}
+	family := serviceFamily(svc)
 	switch family {
 	case "mysql", "mariadb":
-		binaries := []string{"mysql", "mariadb"}
-		if family == "mariadb" {
-			binaries = []string{"mariadb", "mysql"}
-		}
 		var lastErr error
-		for _, bin := range binaries {
-			check := podman.Cmd("exec", container, bin, "-uroot", "-plerd",
+		for _, bin := range mysqlClientBinaries(family) {
+			check := podman.Cmd("exec", container, bin, "-h", "127.0.0.1", "-uroot", "-plerd",
 				"-sNe", mysqlDatabaseExistsQuery(name))
 			out, err := check.Output()
-			if err != nil {
+			// 127 is a client the image does not ship; any other failure is the
+			// client's own, and the next binary's 127 would only hide it.
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 127 {
 				lastErr = err
 				continue
+			}
+			if err != nil {
+				return false, mysqlClientError(err)
 			}
 			return strings.TrimSpace(string(out)) != "0", nil
 		}

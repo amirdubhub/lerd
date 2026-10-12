@@ -10,6 +10,8 @@
   import { resumeSite, loadSites, activeWorktreeDomain, siteHasLogSources, type Site } from '$stores/sites';
   import { routeRest, goToTab } from '$stores/route';
   import { debugLens, isDebugLens, type DebugLens } from '$stores/debugLens';
+  import { status as dumpsStatus, refreshStatus } from '$stores/dumps';
+  import { debugCaptureEnabled } from '$stores/queries';
   import { m } from '../../paraglide/messages.js';
 
   let resumeBusy = $state(false);
@@ -42,7 +44,10 @@
   let activeWorktreeBranch = $state<string>('');
   let nginxOpen = $state(false);
   const canTinker = $derived(Boolean(site.uses_php));
-  const canDumps = $derived(Boolean(site.uses_php));
+  // A site without PHP has only browser events to show, so its Debug tab
+  // appears once debug capture is on.
+  const canDumps = $derived(Boolean(site.uses_php) || $debugCaptureEnabled);
+  void refreshStatus();
   const canEnv = $derived(Boolean(site.has_env));
   // Logs get their own tab in the resource layout rather than living under the
   // overview. Offer it whenever the site exposes any log source, including a
@@ -72,7 +77,7 @@
     if (active === 'logs' && !canLogs) active = 'overview';
     if (active === 'tinker' && !canTinker) active = 'overview';
     if (active === 'env' && !canEnv) active = 'overview';
-    if (active === 'dumps' && !canDumps) active = 'overview';
+    if (active === 'dumps' && !canDumps && (site.uses_php || $dumpsStatus !== null)) active = 'overview';
   });
 
   $effect(() => {
@@ -106,18 +111,18 @@
 </script>
 
 {#snippet tabs()}
-  <button class={tabBtn('overview', active === 'overview')} onclick={() => selectTab('overview')}>{m.sites_tabs_overview()}</button>
+  <button role="tab" aria-selected={active === 'overview'} tabindex={active === 'overview' ? 0 : -1} class={tabBtn('overview', active === 'overview')} onclick={() => selectTab('overview')}>{m.sites_tabs_overview()}</button>
   {#if canLogs}
-    <button class={tabBtn('logs', active === 'logs')} onclick={() => selectTab('logs')}>{m.services_tabs_logs()}</button>
+    <button role="tab" aria-selected={active === 'logs'} tabindex={active === 'logs' ? 0 : -1} class={tabBtn('logs', active === 'logs')} onclick={() => selectTab('logs')}>{m.services_tabs_logs()}</button>
   {/if}
   {#if canEnv}
-    <button class={tabBtn('env', active === 'env')} onclick={() => selectTab('env')}>{m.sites_tabs_env()}</button>
+    <button role="tab" aria-selected={active === 'env'} tabindex={active === 'env' ? 0 : -1} class={tabBtn('env', active === 'env')} onclick={() => selectTab('env')}>{m.sites_tabs_env()}</button>
   {/if}
   {#if canTinker}
-    <button class={tabBtn('tinker', active === 'tinker')} onclick={() => selectTab('tinker')}>{m.sites_tabs_tinker()}</button>
+    <button role="tab" aria-selected={active === 'tinker'} tabindex={active === 'tinker' ? 0 : -1} class={tabBtn('tinker', active === 'tinker')} onclick={() => selectTab('tinker')}>{m.sites_tabs_tinker()}</button>
   {/if}
   {#if canDumps}
-    <button class={tabBtn('dumps', active === 'dumps')} onclick={() => selectTab('dumps')}>{m.debug_title()}</button>
+    <button role="tab" aria-selected={active === 'dumps'} tabindex={active === 'dumps' ? 0 : -1} class={tabBtn('dumps', active === 'dumps')} onclick={() => selectTab('dumps')}>{m.debug_title()}</button>
   {/if}
 {/snippet}
 
@@ -163,7 +168,7 @@
       <SiteTinkerTab {site} branch={activeWorktreeBranch} />
     {/key}
   {:else if active === 'dumps'}
-    <SiteDebugTab siteName={site.name} framework={site.framework} domain={site.domain} branch={activeWorktreeBranch} />
+    <SiteDebugTab siteName={site.name} framework={site.framework} domain={site.domain} branch={activeWorktreeBranch} phpLenses={Boolean(site.uses_php)} origin={site.can_profile ? `${site.tls ? 'https' : 'http'}://${activeWorktreeDomain(site, activeWorktreeBranch)}` : ''} />
   {/if}
 </DetailPanel>
 

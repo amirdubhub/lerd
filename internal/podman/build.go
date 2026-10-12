@@ -15,7 +15,6 @@ import (
 
 	"github.com/geodro/lerd/internal/composer"
 	"github.com/geodro/lerd/internal/config"
-	"github.com/geodro/lerd/internal/imagepull"
 	"github.com/geodro/lerd/internal/nativephp"
 	"github.com/geodro/lerd/internal/origin"
 )
@@ -70,7 +69,7 @@ func ExtraVolumePaths() []string {
 			present = append(present, p)
 		}
 	}
-	return extraVolumePaths(present, home)
+	return append(homeAliasMounts(home), extraVolumePaths(present, home)...)
 }
 
 // bindMountable reports whether a host path is safe to bind-mount into a
@@ -95,18 +94,13 @@ func bindMountable(path string) bool {
 // other path through the ancestor reduction below. Empty, non-absolute, home,
 // and under-home candidates are dropped too.
 func extraVolumePaths(candidates []string, home string) []string {
-	homePrefix := home
-	if !strings.HasSuffix(homePrefix, "/") {
-		homePrefix += "/"
-	}
-
 	seen := map[string]bool{}
 	for _, p := range candidates {
 		if !bindMountable(p) {
 			continue
 		}
 		p = filepath.Clean(p)
-		if p == home || strings.HasPrefix(p, homePrefix) {
+		if config.PathWithin(p, home) {
 			continue
 		}
 		seen[p] = true
@@ -265,6 +259,13 @@ func FPMImageCurrent(version string) bool {
 	}
 	return fpmImageCurrent(FPMImageName(version), hash,
 		customSetHash(version, cfg.GetExtensions(), cfg.AllExtApkDeps(), cfg.GetPackages()))
+}
+
+// FPMImageWouldBuild reports whether a non-forced build of version's image
+// would really build, so a disclosure names only that work: the image is stale
+// or missing, and offline mode is not keeping the one that exists.
+func FPMImageWouldBuild(version string) bool {
+	return !FPMImageCurrent(version) && !OfflineKeeps(FPMImageName(version))
 }
 
 // imageLabel reads a single label from a local image. Returns "" on any
@@ -512,7 +513,7 @@ func buildFPMImage(version string, force, local bool, customExts []string, extDe
 	// Offline defers a refresh of an image that still runs: the rebuild would
 	// re-download the whole base. A missing image is built anyway, and
 	// `lerd php:rebuild` forces its way through.
-	if !force && imagepull.Offline() && ImageExists(imageName) {
+	if !force && OfflineKeeps(imageName) {
 		fmt.Fprintf(w, "  Offline: keeping the current PHP %s image, run `lerd php:rebuild` to refresh it\n", version)
 		return false, nil
 	}
@@ -994,41 +995,48 @@ func EnsureXdebugIni(version string) error {
 // WriteFPMQuadlet writes the systemd quadlet for a PHP-FPM version and reloads the
 // systemd daemon if the content changed. It also ensures the xdebug and user ini files exist.
 func WriteFPMQuadlet(version string) error {
+	_, err := WriteFPMQuadletDiff(version)
+	return err
+}
+
+// WriteFPMQuadletDiff is WriteFPMQuadlet, also reporting whether the unit
+// changed, so a caller can move a running container onto the new one.
+func WriteFPMQuadletDiff(version string) (bool, error) {
 	short := strings.ReplaceAll(version, ".", "")
 	unitName := "lerd-php" + short + "-fpm"
 
 	if err := EnsureUserIni(version); err != nil {
-		return fmt.Errorf("creating user ini: %w", err)
+		return false, fmt.Errorf("creating user ini: %w", err)
 	}
 	if err := EnsureSharedIni(); err != nil {
-		return fmt.Errorf("creating shared ini: %w", err)
+		return false, fmt.Errorf("creating shared ini: %w", err)
 	}
 	if err := EnsureOdbcInst(); err != nil {
-		return fmt.Errorf("creating odbcinst registry: %w", err)
+		return false, fmt.Errorf("creating odbcinst registry: %w", err)
 	}
 	if err := EnsureXdebugIni(version); err != nil {
-		return fmt.Errorf("creating xdebug ini: %w", err)
+		return false, fmt.Errorf("creating xdebug ini: %w", err)
 	}
 	if err := EnsureDumpAssets(); err != nil {
-		return fmt.Errorf("ensuring dump assets: %w", err)
+		return false, fmt.Errorf("ensuring dump assets: %w", err)
 	}
 	if err := EnsureProfilerAssets(); err != nil {
-		return fmt.Errorf("ensuring profiler assets: %w", err)
+		return false, fmt.Errorf("ensuring profiler assets: %w", err)
 	}
 	if err := EnsureDevtoolsAssets(); err != nil {
-		return fmt.Errorf("ensuring devtools assets: %w", err)
+		return false, fmt.Errorf("ensuring devtools assets: %w", err)
 	}
 	if err := EnsureMailAssets(); err != nil {
-		return fmt.Errorf("ensuring mail assets: %w", err)
+		return false, fmt.Errorf("ensuring mail assets: %w", err)
 	}
 
 	if err := ensureFPMHostsFile(); err != nil {
-		return err
+		return false, err
 	}
 
 	content, err := renderFPMQuadletContent(version)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// Publish this version's extra shell ports on the SHARED FPM container only.
 	// generateCustomFPMQuadlet reuses renderFPMQuadletContent without these lines,
@@ -1043,14 +1051,15 @@ func WriteFPMQuadlet(version string) error {
 	if !SkipQuadletUpToDateCheck {
 		existingPath := filepath.Join(config.QuadletDir(), unitName+".container")
 		if existing, err := os.ReadFile(existingPath); err == nil && string(existing) == content {
-			return nil
+			return false, nil
 		}
 	}
 
-	if _, err := WriteQuadletDiff(unitName, content); err != nil {
-		return err
+	changed, err := WriteQuadletDiff(unitName, content)
+	if err != nil {
+		return false, err
 	}
-	return DaemonReloadFn()
+	return changed, DaemonReloadFn()
 }
 
 // renderFPMQuadletContent renders the PHP-FPM container template for a version
@@ -1071,6 +1080,9 @@ func renderFPMQuadletContent(version string) (string, error) {
 	content = strings.ReplaceAll(content, "{{.SharedIniPath}}", config.SharedIniFile())
 	content = strings.ReplaceAll(content, "{{.OdbcInstMountLine}}", odbcFPMMountLines())
 	content = strings.ReplaceAll(content, "{{.DumpsDir}}", config.DumpsAssetsDir())
+	mount, pre := providedEnvLines()
+	content = strings.ReplaceAll(content, "{{.ProvidedEnvMountLine}}", mount)
+	content = strings.ReplaceAll(content, "{{.ProvidedEnvExecStartPre}}", pre)
 	content = strings.ReplaceAll(content, "{{.DumpsIniPath}}", config.DumpsIniFile())
 	content = strings.ReplaceAll(content, "{{.DevtoolsIniPath}}", config.DevtoolsIniFile())
 	content = strings.ReplaceAll(content, "{{.MailIniPath}}", config.MailIniFile())
@@ -1089,6 +1101,8 @@ func renderFPMQuadletContent(version string) (string, error) {
 // paths change so that extra volume mounts stay in sync.
 func RewriteFPMQuadlets() error {
 	extraPaths := ExtraVolumePaths()
+	home, _ := os.UserHomeDir()
+	aliases := homeAliasMounts(home)
 	versions, _ := listInstalledPHPVersions()
 
 	var changedUnits []string
@@ -1110,7 +1124,7 @@ func RewriteFPMQuadlets() error {
 		// An unchanged file is not proof the container has the mounts: an
 		// earlier writer in the same run may have written them without ever
 		// restarting the unit (#914).
-		if changed || UnitMissingMounts(unitName, extraPaths) || composerMountDrifted(unitName) {
+		if changed || UnitMissingMounts(unitName, extraPaths) || unitMissingHomeAliases(unitName, aliases) || composerMountDrifted(unitName) {
 			changedUnits = append(changedUnits, unitName)
 		}
 	}
@@ -1121,7 +1135,7 @@ func RewriteFPMQuadlets() error {
 		nginxContent = ApplyNginxPorts(nginxContent, httpPort, httpsPort)
 		nginxContent = InjectExtraVolumes(nginxContent, extraPaths)
 		if changed, err := WriteQuadletDiff("lerd-nginx", nginxContent); err == nil {
-			if changed || UnitMissingMounts("lerd-nginx", extraPaths) {
+			if changed || UnitMissingMounts("lerd-nginx", extraPaths) || unitMissingHomeAliases("lerd-nginx", aliases) {
 				changedUnits = append(changedUnits, "lerd-nginx")
 			}
 		}
@@ -1331,7 +1345,7 @@ func PathVisible(path, phpVersion string) bool {
 	if !bindMountable(path) {
 		return false
 	}
-	if home, _ := os.UserHomeDir(); home != "" && (path == home || strings.HasPrefix(path, strings.TrimSuffix(home, "/")+"/")) {
+	if home, _ := os.UserHomeDir(); home != "" && config.PathWithin(path, home) {
 		return true
 	}
 	short := strings.ReplaceAll(phpVersion, ".", "")
@@ -1339,7 +1353,13 @@ func PathVisible(path, phpVersion string) bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(string(content), "\n") {
+	return volumeCovers(string(content), path)
+}
+
+// volumeCovers reports whether a quadlet already bind-mounts path, through its
+// own Volume line or an ancestor's.
+func volumeCovers(content, path string) bool {
+	for _, line := range strings.Split(content, "\n") {
 		spec, ok := strings.CutPrefix(strings.TrimSpace(line), "Volume=")
 		if !ok {
 			continue
@@ -1372,14 +1392,7 @@ func EnsurePathMounted(path, phpVersion string) {
 		path = root
 	}
 	home, _ := os.UserHomeDir()
-	if home == "" {
-		return
-	}
-	homePrefix := home
-	if !strings.HasSuffix(homePrefix, "/") {
-		homePrefix += "/"
-	}
-	if path == home || strings.HasPrefix(path, homePrefix) {
+	if home == "" || config.PathWithin(path, home) {
 		return
 	}
 
@@ -1437,6 +1450,11 @@ func EnsurePathMounted(path, phpVersion string) {
 			continue
 		}
 
+		// A line of its own under a mounted ancestor, a worktree inside its
+		// project, is left behind when that folder goes and stops the container.
+		if volumeCovers(string(existing), path) {
+			continue
+		}
 		updated := InjectExtraVolumes(string(existing), []string{path})
 		if updated == string(existing) {
 			continue

@@ -23,7 +23,7 @@ lerd php:runtime container   # back to the containers
 lerd php:runtime             # show the current runtime
 ```
 
-Or from the dashboard: **System → PHP runtime**. Confirming a move to native offers to remove the PHP-FPM images at the same time, which reclaims the disk they hold; they are built again if you ever switch back. The offer is only made in that direction, since on the container runtime those images are what serves every site.
+Or from the dashboard: **System → PHP runtime**. Confirming a move to native offers to remove the PHP-FPM images at the same time, which reclaims the disk they hold; they are built again if you ever switch back, every missing version at once, the same as `lerd php:runtime` does in a terminal. The offer is only made in that direction, since on the container runtime those images are what serves every site.
 
 The setting is install-wide, not per site. The FPM container is shared by every site on a PHP version, so sites cannot be moved one at a time.
 
@@ -51,6 +51,8 @@ Builds are published per PHP patch, so `8.4.24` and `8.4.25` are separate downlo
 `php:update` follows the runtime, so it is one command either way: on the container runtime it rebuilds the FPM images from the newest base, which is what `lerd php:rebuild` does.
 
 New patches arrive without a lerd release. The pins live in a manifest lerd reads at runtime, so a PHP released this week is offered to every install within a day of being built.
+
+A patch is sometimes rebuilt without PHP itself changing, which is what happens when the engine-level extension beside it is fixed. The version is then the same on both sides and cannot say whether you hold that build, so each pin also carries the date it was published and lerd records it next to the binary. An update is offered when either the patch or that date moves, which means a rebuild reaches you the same way a new patch does.
 
 The binaries land in `~/.local/share/lerd/bin` as `php-native-<version>`, with their loadable extensions in `~/.local/share/lerd/native-php/<version>/modules`. Extensions are kept per version because they are named for the extension rather than the build, and a module only loads into the PHP it was compiled against. An update replaces the binary and its extensions together and then restarts the pool, since a running pool holds both open and keeps serving what it started with.
 

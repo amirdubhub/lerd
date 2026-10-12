@@ -9,13 +9,13 @@ import (
 
 // A SIGTERM (lerd stop, launchctl bootout, logout, a systemd restart) must take
 // the public tunnels down with the process.
-func TestStopTunnelsOnShutdown(t *testing.T) {
+func TestCleanUpOnShutdown(t *testing.T) {
 	stopped := make(chan struct{})
 	prevExit := exit
 	exit = func(int) { close(stopped) }
 	t.Cleanup(func() { exit = prevExit })
 
-	stopTunnelsOnShutdown()
+	cleanUpOnShutdown()
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}

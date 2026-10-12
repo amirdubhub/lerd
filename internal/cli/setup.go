@@ -30,7 +30,9 @@ type setupStep struct {
 	// optional marks a non-essential step whose failure is surfaced as a warning
 	// and skipped rather than aborting setup (e.g. the in-container bun install).
 	optional bool
-	run      func() error
+	// service is the one a worker step needs running, resolved before steps run.
+	service string
+	run     func() error
 }
 
 // NewSetupCmd returns the setup command.
@@ -200,6 +202,12 @@ func runNamedSetupSteps(cwd string, labels []string, skipOpen bool) error {
 	for _, label := range skipped {
 		fmt.Printf("→ %s (nothing left to do)\n", label)
 	}
+	// The caller already picked these steps and has no terminal to answer with.
+	chosen := map[string]bool{}
+	for _, s := range selected {
+		chosen[s.label] = true
+	}
+	resolveSetupServices(selected, chosen, true, serviceRunning, nil, ensureSetupService)
 	for _, s := range selected {
 		fmt.Printf("→ %s\n", s.label)
 		if err := s.run(); err != nil {
@@ -318,6 +326,15 @@ func runSetup(allSteps, skipOpen bool) error {
 		selectedSet[s] = true
 	}
 
+	unattended := allSteps || !promptableTTY()
+	resolveSetupServices(steps, selectedSet, unattended, serviceRunning, promptConfirm, ensureSetupService)
+	return runSelectedSteps(steps, selectedSet, promptContinue, unattended)
+}
+
+// runSelectedSteps executes the selected steps in order. An unattended run has
+// nobody to ask whether to go on after a failure, so it stops with an error,
+// the same outcome as the prompt's default answer.
+func runSelectedSteps(steps []setupStep, selectedSet map[string]bool, askContinue func() bool, unattended bool) error {
 	// Execute steps in order. Each step's own output is captured behind a single
 	// feedback line and only surfaced when the step fails, matching the link
 	// flow's "action … ✓" styling. The separating blank line was already printed
@@ -342,7 +359,7 @@ func runSetup(allSteps, skipOpen bool) error {
 			}
 			step.Fail(err)
 			_, _ = os.Stdout.Write(out)
-			if !promptContinue() {
+			if unattended || !askContinue() {
 				return fmt.Errorf("setup aborted after %q failed", s.label)
 			}
 			continue
@@ -568,8 +585,10 @@ func planSetupSteps(cwd string, skipOpen bool) []setupStep {
 		}
 	}
 
-	// Only offer the secure step when the site isn't already secured by lerd init.
-	if site == nil || !site.Secured {
+	// Only offer the secure step when the site isn't already secured by lerd init,
+	// and never on a .localhost install, where lerd secure can only refuse.
+	gcfg, _ := config.LoadGlobal()
+	if (site == nil || !site.Secured) && gcfg.DNSManaged() {
 		steps = append(steps, setupStep{
 			label:   "lerd secure",
 			enabled: false,
@@ -633,6 +652,7 @@ func planSetupSteps(cwd string, skipOpen bool) []setupStep {
 				steps = append(steps, setupStep{
 					label:   wn + ":start",
 					enabled: savedWorkers[wn],
+					service: requiredServiceFor(cwd, wd),
 					run: func() error {
 						phpVersion := ownerSite.PHPVersion
 						if phpVersion == "" {
@@ -755,18 +775,22 @@ func composerInContainer(dir string, args ...string) error {
 		cfg, _ := config.LoadGlobal()
 		version = cfg.PHP.DefaultVersion
 	}
+	composerPhar := composer.PharPath()
+	if took, err := execOnHostIfNative(dir, append([]string{"php", composerPhar}, args...), "COMPOSER_HOME="+composerHomeDir()); took {
+		return err
+	}
 	container := fpmContainerForDir(dir, version)
 
 	podman.EnsurePathMounted(dir, version)
 
 	home := os.Getenv("HOME")
-	composerPhar := composer.PharPath()
 
 	cmdArgs := []string{"exec", "-i", "-w", dir,
 		"--env", "HOME=" + home,
 		"--env", "COMPOSER_HOME=" + composerHomeDir(),
-		container, "php", composerPhar,
 	}
+	cmdArgs = append(cmdArgs, debugSiteEnvArgs(dir)...)
+	cmdArgs = append(cmdArgs, container, "php", composerPhar)
 	cmdArgs = append(cmdArgs, args...)
 
 	cmd := podman.Cmd(cmdArgs...)
@@ -811,6 +835,11 @@ func execInContainer(dir, command string) error {
 		cfg, _ := config.LoadGlobal()
 		version = cfg.PHP.DefaultVersion
 	}
+	if parts := strings.Fields(command); len(parts) > 0 {
+		if took, err := execOnHostIfNative(dir, parts); took {
+			return err
+		}
+	}
 	container := fpmContainerForDir(dir, version)
 	podman.EnsurePathMounted(dir, version)
 	// This execs php in the container directly, bypassing the shim, so the
@@ -820,7 +849,9 @@ func execInContainer(dir, command string) error {
 	if len(parts) == 0 {
 		return fmt.Errorf("empty setup command")
 	}
-	cmdArgs := append([]string{"exec", "-i", "-w", dir, container}, parts...)
+	cmdArgs := append([]string{"exec", "-i", "-w", dir}, debugSiteEnvArgs(dir)...)
+	cmdArgs = append(cmdArgs, container)
+	cmdArgs = append(cmdArgs, parts...)
 	cmd := podman.Cmd(cmdArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

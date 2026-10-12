@@ -62,6 +62,7 @@ container images are a separate distribution with their own notices.
 | github.com/lucasb-eyer/go-colorful | v1.4.0 | MIT |
 | github.com/mattn/go-runewidth | v0.0.24 | MIT |
 | github.com/microcosm-cc/bluemonday | v1.0.27 | BSD-3-Clause |
+| github.com/miekg/dns | v1.1.73 | BSD-3-Clause |
 | github.com/minio/crc64nvme | v1.1.1 | Apache-2.0 |
 | github.com/minio/md5-simd | v1.1.2 | Apache-2.0 |
 | github.com/minio/minio-go/v7 | v7.3.0 | Apache-2.0 |
@@ -94,12 +95,12 @@ container images are a separate distribution with their own notices.
 | go.uber.org/multierr | v1.11.0 | MIT |
 | go.uber.org/zap | v1.28.0 | MIT |
 | go.yaml.in/yaml/v3 | v3.0.5 | Apache-2.0 |
-| golang.org/x/crypto | v0.55.0 | BSD-3-Clause |
-| golang.org/x/net | v0.58.0 | BSD-3-Clause |
-| golang.org/x/sync | v0.22.0 | BSD-3-Clause |
-| golang.org/x/sys | v0.47.0 | BSD-3-Clause |
-| golang.org/x/term | v0.45.0 | BSD-3-Clause |
-| golang.org/x/text | v0.41.0 | BSD-3-Clause |
+| golang.org/x/crypto | v0.57.0 | BSD-3-Clause |
+| golang.org/x/net | v0.60.0 | BSD-3-Clause |
+| golang.org/x/sync | v0.23.0 | BSD-3-Clause |
+| golang.org/x/sys | v0.48.0 | BSD-3-Clause |
+| golang.org/x/term | v0.46.0 | BSD-3-Clause |
+| golang.org/x/text | v0.42.0 | BSD-3-Clause |
 | gopkg.in/ini.v1 | v1.67.3 | Apache-2.0 |
 | gopkg.in/yaml.v3 | v3.0.1 | Apache-2.0 |
 | modernc.org/libc | v1.74.2 | MIT |
@@ -2856,6 +2857,42 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+### github.com/miekg/dns v1.1.73
+
+BSD-3-Clause
+
+```
+BSD 3-Clause License
+
+Copyright (c) 2009, The Go Authors. Extensions copyright (c) 2011, Miek Gieben. 
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ### github.com/minio/md5-simd v1.1.2
 
 Apache-2.0
@@ -4523,7 +4560,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### golang.org/x/crypto v0.55.0, golang.org/x/net v0.58.0, golang.org/x/sync v0.22.0, golang.org/x/sys v0.47.0, golang.org/x/term v0.45.0, golang.org/x/text v0.41.0
+### golang.org/x/crypto v0.57.0, golang.org/x/net v0.60.0, golang.org/x/sync v0.23.0, golang.org/x/sys v0.48.0, golang.org/x/term v0.46.0, golang.org/x/text v0.42.0
 
 BSD-3-Clause
 
@@ -5340,7 +5377,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 | devalue | 5.9.4 | MIT |
 | dom-accessibility-api | 0.5.16 | MIT |
 | dom-accessibility-api | 0.6.3 | MIT |
-| dompurify | 3.4.14 | (MPL-2.0 OR Apache-2.0) |
+| dompurify | 3.4.16 | (MPL-2.0 OR Apache-2.0) |
 | dunder-proto | 1.0.1 | MIT |
 | enhanced-resolve | 5.21.3 | MIT |
 | entities | 6.0.1 | BSD-2-Clause |
@@ -5414,7 +5451,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 | safer-buffer | 2.1.2 | MIT |
 | saxes | 6.0.0 | ISC |
 | siginfo | 2.0.0 | ISC |
-| source-map-js | 1.2.1 | BSD-3-Clause |
+| source-map-js | 1.2.2 | BSD-3-Clause |
 | sqlite-wasm-kysely | 0.3.0 | MIT |
 | stackback | 0.0.2 | MIT |
 | std-env | 4.1.0 | MIT |
@@ -7098,7 +7135,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### dompurify 3.4.14
+### dompurify 3.4.16
 
 (MPL-2.0 OR Apache-2.0)
 
@@ -10333,7 +10370,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### source-map-js 1.2.1
+### source-map-js 1.2.2
 
 BSD-3-Clause
 

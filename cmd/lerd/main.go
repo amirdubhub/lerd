@@ -223,6 +223,7 @@ func main() {
 	root.AddCommand(cli.NewStreamingCmd())
 	root.AddCommand(cli.NewWSLSetupCmd())
 	root.AddCommand(cli.NewProfileCmd())
+	root.AddCommand(cli.NewBrowserLogsCmd())
 	root.AddCommand(cli.NewNotifyCmd())
 	root.AddCommand(cli.NewPhpExtCmd())
 	root.AddCommand(cli.NewPhpBunCmd())
@@ -259,6 +260,7 @@ func main() {
 	root.AddCommand(cli.NewDNSDisableCmd())
 	root.AddCommand(cli.NewDNSRepairCmd())
 	root.AddCommand(cli.NewDNSForwarderCmd())
+	root.AddCommand(cli.NewDNSServeCmd())
 	root.AddCommand(cli.NewLANCmd())
 	root.AddCommand(cli.NewLANExposeCmd())
 	root.AddCommand(cli.NewLANUnexposeCmd())
@@ -512,6 +514,11 @@ func newWatchCmd() *cobra.Command {
 				}
 			}
 
+			// The provided-env files live on tmpfs, and nothing else refills
+			// them after a reboot: systemd brings the sites back up without
+			// lerd start. A provider can hang, so it must not hold up readiness.
+			go cli.RestoreProvidedEnv()
+
 			// Periodically catch deletions that happen while the watcher is busy.
 			go func() {
 				for range time.Tick(30 * time.Second) {
@@ -641,12 +648,6 @@ func newWatchCmd() *cobra.Command {
 			// the auto_cleanup config; never touches service images (--deep).
 			go watcher.WatchCleanup(time.Hour)
 
-			// Take the scheduled database snapshots of every site the
-			// automatic-snapshot policy covers, and prune what retention has
-			// expired. Off unless the user turns it on; the hourly tick only
-			// decides whether the configured schedule is due.
-			go watcher.WatchAutoSnapshot(time.Hour)
-
 			// Keep the cached framework store index fresh so offline detection and
 			// listing resolve the full catalogue without a network round trip.
 			go store.WatchIndex(6 * time.Hour)
@@ -693,6 +694,14 @@ func newWatchCmd() *cobra.Command {
 					)
 				},
 			)
+
+			// Take the scheduled database snapshots of every site the
+			// automatic-snapshot policy covers, and prune what retention has
+			// expired. Off unless the user turns it on; the hourly tick only
+			// decides whether the configured schedule is due. Started after the
+			// idle engine exists, since its first pass may have to wake a
+			// sleeping database through it.
+			go watcher.WatchAutoSnapshot(time.Hour)
 
 			// Watch key site config files and signal queue:restart on change.
 			go func() {
@@ -751,7 +760,7 @@ func newWatchCmd() *cobra.Command {
 								}
 							}
 
-							// Re-detect Node version in case .lerd.yaml, .node-version, or .nvmrc changed.
+							// Re-detect Node version in case .lerd.yaml or a Node version file changed.
 							if detected, detErr := nodeDet.DetectVersion(sitePath); detErr == nil && detected != site.NodeVersion {
 								fmt.Printf("Node version changed for %s: %s -> %s\n", site.Name, site.NodeVersion, detected)
 								site.NodeVersion = detected
@@ -778,7 +787,13 @@ func newWatchCmd() *cobra.Command {
 			// (lerd-ui, lerd-tray, test harnesses), then reconcile.
 			notifyReadyThenScan(lerdSystemd.NotifyReady, func() { bootScan(cfg) })
 
-			return watcher.Watch(ctx, cfg.ParkedDirectories, func(projectPath string) {
+			parked := func() []string {
+				if c, err := config.LoadGlobal(); err == nil {
+					return c.ParkedDirectories
+				}
+				return cfg.ParkedDirectories
+			}
+			return watcher.Watch(ctx, parked, func(projectPath string) {
 				fmt.Printf("New project detected: %s\n", projectPath)
 				registered, err := cli.RegisterProject(projectPath, cfg)
 				if err != nil {

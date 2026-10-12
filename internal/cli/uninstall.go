@@ -20,30 +20,53 @@ import (
 
 // NewUninstallCmd returns the uninstall command.
 func NewUninstallCmd() *cobra.Command {
-	var force bool
+	var force, keepData bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove Lerd and all its components",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return runUninstall(force)
+			return runUninstall(force, keepData)
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompts")
+	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompts and remove everything, data included")
+	cmd.Flags().BoolVar(&keepData, "keep-data", false, "Skip confirmation prompts but keep config, databases and images for a later reinstall")
 	return cmd
 }
 
-func runUninstall(force bool) error {
+// uninstallPlan is what an uninstall removes beyond lerd itself.
+type uninstallPlan struct {
+	removeData, removeMCP, removeMkcertCA, purgeImages bool
+}
+
+// uninstallPlanFor settles the plan from the flags, asking only when neither
+// says what to do. A refusal is an error so a script never reads it as done.
+func uninstallPlanFor(force, keepData bool) (uninstallPlan, error) {
+	if keepData {
+		return uninstallPlan{removeMCP: true, removeMkcertCA: true}, nil
+	}
+	if force {
+		return uninstallPlan{removeData: true, removeMCP: true, removeMkcertCA: true, purgeImages: true}, nil
+	}
+	if !feedback.Confirm("This will stop all containers and remove lerd. Continue?", false) {
+		return uninstallPlan{}, fmt.Errorf("uninstall aborted")
+	}
+	return uninstallPlan{
+		removeData:     confirmRemoveData(),
+		removeMCP:      confirmRemoveMCPIntegration(),
+		removeMkcertCA: confirmRemoveMkcertCA(),
+		purgeImages:    confirmPurgeLerdImages(),
+	}, nil
+}
+
+func runUninstall(force, keepData bool) error {
 	feedback.Begin()
 	feedback.Line("uninstalling lerd")
 
-	if !force {
-		if !feedback.Confirm("This will stop all containers and remove lerd. Continue?", false) {
-			feedback.Line("aborted")
-			return nil
-		}
+	plan, err := uninstallPlanFor(force, keepData)
+	if err != nil {
+		return err
 	}
-
-	removeData := force || confirmRemoveData()
+	removeData := plan.removeData
 
 	// Global npm packages the npm shim captured into lerd's prefix would
 	// silently vanish with the data dir — nobody expects uninstalling a dev
@@ -62,15 +85,19 @@ func runUninstall(force bool) error {
 		}
 	}
 
-	removeMCP := force || confirmRemoveMCPIntegration()
-	removeMkcertCA := force || confirmRemoveMkcertCA()
-	purgeImages := force || confirmPurgeLerdImages()
+	removeMCP := plan.removeMCP
+	removeMkcertCA := plan.removeMkcertCA
+	purgeImages := plan.purgeImages
 
 	// DNS teardown runs outside the step runner because it may prompt for sudo;
 	// the lock glyph warns that the password prompt below is expected.
 	feedback.Sudo("Removing DNS configuration")
 	dns.Teardown()
 	removePortDropIn()
+
+	if !removeData {
+		_ = config.SetKeptServices(installedDefaultServices(knownServices(), podman.QuadletInstalled))
+	}
 
 	step("Stopping containers and services")
 	{
@@ -120,6 +147,16 @@ func runUninstall(force bool) error {
 		step("Removing lerd from Windows")
 		if err := removeWindowsSide(); err != nil {
 			fmt.Printf(" %v\n", err)
+		} else {
+			ok()
+		}
+	}
+
+	if found, err := removeOmarchyGlance(); found {
+		step("Removing the Lerd Glance plugin from the Omarchy bar")
+		if err != nil {
+			fmt.Println(feedback.Amber("!"))
+			feedback.Note("remove it with: omarchy-plugin-remove " + glancePluginID + " --yes")
 		} else {
 			ok()
 		}
@@ -216,6 +253,17 @@ func runUninstall(force bool) error {
 // resetFailedUnit is podman.ResetFailedUnit, indirected so a test can watch the
 // removal reset what it removed without a systemd to reset it on.
 var resetFailedUnit = podman.ResetFailedUnit
+
+// installedDefaultServices lists the built-in services that have a unit.
+func installedDefaultServices(names []string, installed func(unit string) bool) []string {
+	var out []string
+	for _, n := range names {
+		if installed("lerd-" + n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
 
 // removeServiceUnits deletes every lerd unit file and clears the failed state
 // systemd keeps for it, which the installer script has always done and this path

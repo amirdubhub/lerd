@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,16 +72,23 @@ func rewriteEnvForHostProxy(updates map[string]string, serviceNames []string) {
 	// Which container port each service listens on, so a host-only value can
 	// keep a port that has no sibling key to live in.
 	serviceContainerPort := map[string]string{}
+	serviceHostPorts := map[string]map[string]string{}
 	for _, name := range names {
 		for _, mapping := range servicePortMappings(name) {
-			if _, container, ok := splitHostContainerPort(mapping); ok {
+			if host, container, ok := splitHostContainerPort(mapping); ok {
 				if _, seen := serviceContainerPort[name]; !seen {
 					serviceContainerPort[name] = container
+				}
+				if serviceHostPorts[name] == nil {
+					serviceHostPorts[name] = map[string]string{}
+				}
+				if _, seen := serviceHostPorts[name][container]; !seen {
+					serviceHostPorts[name][container] = host
 				}
 			}
 		}
 	}
-	applyHostProxyEnvWithPorts(updates, containerToHost, serviceContainerPort)
+	applyHostProxyEnvWithPorts(updates, containerToHost, serviceContainerPort, serviceHostPorts)
 }
 
 // loopbackServiceNames lists the services whose container port must be mapped
@@ -221,7 +230,7 @@ var lerdContainerHostRe = regexp.MustCompile(`lerd-[a-z0-9-]+(?::\d+)?`)
 // port, and a discrete *_PORT value with no host alongside is remapped too.
 // Split from rewriteEnvForHostProxy so the logic is testable without services.
 func applyHostProxyEnv(updates, containerToHost map[string]string) {
-	applyHostProxyEnvWithPorts(updates, containerToHost, nil)
+	applyHostProxyEnvWithPorts(updates, containerToHost, nil, nil)
 }
 
 // applyHostProxyEnvWithPorts is applyHostProxyEnv plus the container port each
@@ -230,7 +239,20 @@ func applyHostProxyEnv(updates, containerToHost map[string]string) {
 // DB_PORT, while WordPress writes the port into DB_HOST and has no DB_PORT
 // constant at all, so a bare rewrite there silently retargets the app at
 // whatever owns the container's port on the host.
-func applyHostProxyEnvWithPorts(updates, containerToHost, serviceContainerPort map[string]string) {
+func applyHostProxyEnvWithPorts(updates, containerToHost, serviceContainerPort map[string]string, serviceHostPorts map[string]map[string]string) {
+	// Two services of one family share a container port (mysql and mysql-9-7
+	// both on 3306), so a port is looked up on the service a value names first
+	// and on the shared map only when nothing names one.
+	hostPort := func(svc, container string) (string, bool) {
+		if host, ok := serviceHostPorts[svc][container]; ok {
+			return host, true
+		}
+		host, ok := containerToHost[container]
+		return host, ok
+	}
+	// Sibling hosts are read before anything is rewritten, since a *_HOST
+	// rewritten first no longer says which service its *_PORT belongs to.
+	original := maps.Clone(updates)
 	for k, v := range updates {
 		if !hostProxyConnKey(k) {
 			continue
@@ -238,9 +260,9 @@ func applyHostProxyEnvWithPorts(updates, containerToHost, serviceContainerPort m
 		nv := lerdContainerHostRe.ReplaceAllStringFunc(v, func(m string) string {
 			name, port, found := strings.Cut(m, ":")
 			if !found {
-				return hostProxyLoopback + bareHostPortSuffix(k, name, updates, containerToHost, serviceContainerPort)
+				return hostProxyLoopback + bareHostPortSuffix(k, name, updates, serviceContainerPort, hostPort)
 			}
-			if mapped, ok := containerToHost[port]; ok {
+			if mapped, ok := hostPort(strings.TrimPrefix(name, "lerd-"), port); ok {
 				port = mapped
 			}
 			return hostProxyLoopback + ":" + port
@@ -252,11 +274,29 @@ func applyHostProxyEnvWithPorts(updates, containerToHost, serviceContainerPort m
 		// No host token to anchor on: a standalone port key (DB_PORT=3306, or
 		// TYPO3's DB.Connections.Default.port) still needs remapping.
 		if isPortKey(k) {
-			if mapped, ok := containerToHost[v]; ok {
+			if mapped, ok := hostPort(siblingHostService(k, original), v); ok {
 				updates[k] = mapped
 			}
 		}
 	}
+}
+
+// siblingHostService names the lerd service the host key beside a port key
+// points at (DB_HOST for DB_PORT, the dotted host beside a dotted port), or ""
+// when there is none.
+func siblingHostService(portKey string, env map[string]string) string {
+	hostKey := ""
+	if base, ok := strings.CutSuffix(portKey, "_PORT"); ok {
+		hostKey = base + "_HOST"
+	} else if idx := strings.LastIndex(portKey, "."); idx >= 0 {
+		hostKey = portKey[:idx+1] + "host"
+	}
+	m := lerdContainerHostRe.FindString(env[hostKey])
+	if m == "" || m != strings.TrimSpace(env[hostKey]) {
+		return ""
+	}
+	name, _, _ := strings.Cut(m, ":")
+	return strings.TrimPrefix(name, "lerd-")
 }
 
 // isPortKey reports whether a key holds a bare port number, in either the
@@ -273,13 +313,13 @@ func isPortKey(k string) bool {
 // published port itself, and "" when it must not. It carries the port only if
 // the service is published somewhere other than its container port and no
 // sibling *_PORT key is there to hold it.
-func bareHostPortSuffix(key, token string, updates, containerToHost, serviceContainerPort map[string]string) string {
+func bareHostPortSuffix(key, token string, updates, serviceContainerPort map[string]string, hostPort func(svc, container string) (string, bool)) string {
 	svc := strings.TrimPrefix(token, "lerd-")
 	container, ok := serviceContainerPort[svc]
 	if !ok {
 		return ""
 	}
-	host, ok := containerToHost[container]
+	host, ok := hostPort(svc, container)
 	if !ok || host == container {
 		return ""
 	}
@@ -527,6 +567,10 @@ func runEnvIfManaged(cwd string, fn func() error) {
 	}
 }
 
+// envAssumeYes is `lerd env --yes`: approve the project's env_provider without
+// a prompt, for terminals lerd cannot ask on.
+var envAssumeYes bool
+
 // NewEnvCmd returns the env command.
 func NewEnvCmd() *cobra.Command {
 	var verbose bool
@@ -553,6 +597,7 @@ func NewEnvCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Print detailed per-service output (used by the MCP server)")
+	cmd.Flags().BoolVarP(&envAssumeYes, "yes", "y", false, "Approve the project's env_provider host command without prompting, and remember it")
 	return cmd
 }
 
@@ -644,6 +689,32 @@ func projectUsesSQLite(lerdYAMLServices map[string]bool, envMap map[string]strin
 	return frameworkServiceDetected(*fw.Env.SQLite, envMap)
 }
 
+// defaultServiceFor returns the definition's default_service when the project
+// names no database: none detected in its config, none picked, not on SQLite and
+// not on an external server. A value the definition does not wire is refused by
+// name rather than guessed at.
+func defaultServiceFor(fw *config.Framework, envMap map[string]string, picked, external map[string]bool) (string, error) {
+	def := fw.Env.DefaultService
+	if def == "" {
+		return "", nil
+	}
+	if _, ok := fw.Env.Services[def]; !ok {
+		return "", fmt.Errorf("%s declares default_service %q, which its env.services does not define; this lerd cannot wire it", fw.Label, def)
+	}
+	if userPickedDBFromYAML(picked) || externalDBPicked(external) {
+		return "", nil
+	}
+	if fw.Env.SQLite != nil && frameworkServiceDetected(*fw.Env.SQLite, envMap) {
+		return "", nil
+	}
+	for svc, sd := range fw.Env.Services {
+		if (svc == "mysql" || svc == "postgres" || config.IsDBServiceName(svc)) && len(sd.Detect) > 0 && frameworkServiceDetected(sd, envMap) {
+			return "", nil
+		}
+	}
+	return def, nil
+}
+
 func userPickedDBFromYAML(lerdYAMLServices map[string]bool) bool {
 	if lerdYAMLServices["sqlite"] || lerdYAMLServices["mysql"] || lerdYAMLServices["postgres"] {
 		return true
@@ -727,9 +798,12 @@ func runEnv(_ *cobra.Command, _ []string) error {
 	var provisionErrs []error
 
 	// Determine framework-specific env file path and format
-	site, err := ensureSiteForCwd()
+	site, branch, err := ensureSiteAndBranchForCwd()
 	if err != nil {
 		return err
+	}
+	if err := refreshProvidedEnv(*site, envAssumeYes); err != nil {
+		feedback.Warn("%v", err)
 	}
 
 	fwName := site.Framework
@@ -823,7 +897,10 @@ func runEnv(_ *cobra.Command, _ []string) error {
 
 	// 3. Detect services and build the set of key→value updates to apply
 	updates := map[string]string{}
-	dbName := projectDBName(cwd)
+	dbName, domain := projectDBName(cwd), site.PrimaryDomain()
+	if branch != "" {
+		dbName, domain = worktreeEnvTarget(site, branch)
+	}
 
 	scheme := "http"
 	if site.Secured {
@@ -832,7 +909,7 @@ func runEnv(_ *cobra.Command, _ []string) error {
 	tplCtx := siteTemplateCtx{
 		site:   dbName,
 		bucket: s3BucketName(dbName),
-		domain: site.PrimaryDomain(),
+		domain: domain,
 		scheme: scheme,
 	}
 
@@ -914,6 +991,15 @@ func runEnv(_ *cobra.Command, _ []string) error {
 		lerdYAMLServices[dbChoice] = true
 	}
 
+	defaultSvc, err := defaultServiceFor(fw, envMap, lerdYAMLServices, extServices)
+	if err != nil {
+		return err
+	}
+	if defaultSvc != "" {
+		// Wired for this run only, like a pick; the project's own config records
+		// it from here on, so nothing is written to .lerd.yaml.
+		lerdYAMLServices[defaultSvc] = true
+	}
 	userPickedDB := userPickedDBFromYAML(lerdYAMLServices) || externalDBPicked(extServices)
 	valkeyPicked := lerdYAMLServices["valkey"]
 
@@ -922,12 +1008,17 @@ func runEnv(_ *cobra.Command, _ []string) error {
 	// The custom services in play for this project: listed in .lerd.yaml (or
 	// externally managed), or matched by their own env_detect. Resolved before the
 	// framework loop, which has to know which of its roles a drop-in has taken over.
+	// The services whose connection this run writes, recorded on the site once
+	// the env is written. Externally managed ones are left out: the site is on
+	// someone else's server, not lerd's container.
+	wired := map[string]bool{}
+
 	customs, _ := config.ListCustomServices()
 	var pickedCustoms []*config.CustomService
 	customFromYAML := make(map[string]bool, len(customs))
 	for _, svc := range customs {
 		fromYAML := lerdYAMLServices[svc.Name] || extServices[svc.Name]
-		if !fromYAML && !customServiceDetected(svc, cwd, envMap) {
+		if !fromYAML && (site.DeclinesService(svc.Name) || !customServiceDetected(svc, cwd, envMap)) {
 			continue
 		}
 		customFromYAML[svc.Name] = fromYAML
@@ -943,7 +1034,9 @@ func runEnv(_ *cobra.Command, _ []string) error {
 		// the env file still says DB_CONNECTION=sqlite, so detection misses,
 		// but the user picked mysql in the wizard.
 		for svc, def := range fw.Env.Services {
-			detectedFromEnv := frameworkServiceDetected(def, envMap)
+			// A service taken off the site keeps its keys at the example values,
+			// which still match detection; only .lerd.yaml brings it back.
+			detectedFromEnv := frameworkServiceDetected(def, envMap) && !site.DeclinesService(svc)
 			pickedFromYAML := lerdYAMLServices[svc] || extServices[svc]
 
 			// A drop-in has taken this role over. The custom-service loop below wires
@@ -962,7 +1055,11 @@ func runEnv(_ *cobra.Command, _ []string) error {
 			if !startableFrameworkService(svc) {
 				continue
 			}
-			envApplyLine(svc, detectedFromEnv)
+			if svc == defaultSvc && envLive == nil {
+				fmt.Printf("  No database configured, using the default %s — applying lerd connection values\n", svc)
+			} else {
+				envApplyLine(svc, detectedFromEnv)
+			}
 			isDB := svc == "mysql" || svc == "postgres"
 			for _, kv := range def.Vars {
 				k, v, _ := strings.Cut(kv, "=")
@@ -971,6 +1068,7 @@ func runEnv(_ *cobra.Command, _ []string) error {
 			if externalManaged(svc, extServices) {
 				continue
 			}
+			wired[svc] = true
 			if isDB {
 				if err := ensureServiceRunning(svc); err != nil {
 					provisionErrs = append(provisionErrs, fmt.Errorf("%s did not start, so its databases were not created: %w", svc, err))
@@ -1025,7 +1123,7 @@ func runEnv(_ *cobra.Command, _ []string) error {
 		// credentials.
 		for _, svc := range knownServices() {
 			detector, ok := serviceDetectors[svc]
-			detectedFromEnv := ok && detector(envMap)
+			detectedFromEnv := ok && detector(envMap) && !site.DeclinesService(svc)
 			pickedFromYAML := lerdYAMLServices[svc] || extServices[svc]
 
 			if !shouldApplyService(svc, detectedFromEnv, pickedFromYAML, userPickedDB, valkeyPicked) {
@@ -1050,6 +1148,7 @@ func runEnv(_ *cobra.Command, _ []string) error {
 			if externalManaged(svc, extServices) {
 				continue
 			}
+			wired[svc] = true
 
 			if isDB {
 				if err := ensureServiceRunning(svc); err != nil {
@@ -1185,6 +1284,7 @@ func runEnv(_ *cobra.Command, _ []string) error {
 		if externalManaged(svc.Name, extServices) {
 			continue
 		}
+		wired[svc.Name] = true
 		if err := ensureServiceRunning(svc.Name); err != nil {
 			if isDB {
 				provisionErrs = append(provisionErrs, fmt.Errorf("%s did not start, so its databases were not created: %w", svc.Name, err))
@@ -1231,7 +1331,7 @@ func runEnv(_ *cobra.Command, _ []string) error {
 	if fw.HasWorker("reverb", cwd) &&
 		strings.ToLower(strings.Trim(overrideOr(envOverrides, envMap, "BROADCAST_CONNECTION"), `"'`)) == "reverb" {
 		envApplyLine("reverb", true)
-		for k, v := range reverbEnvUpdates(envMap, site.PrimaryDomain(), site.Secured, cwd) {
+		for k, v := range reverbEnvUpdates(envMap, domain, site.Secured, cwd) {
 			updates[k] = v
 		}
 	}
@@ -1246,7 +1346,11 @@ func runEnv(_ *cobra.Command, _ []string) error {
 	if urlKey == "" {
 		urlKey = "APP_URL"
 	}
-	if url := resolveAppURL(cwd, site); url != "" && !strings.EqualFold(urlKey, "none") {
+	url := resolveAppURL(cwd, site)
+	if branch != "" {
+		url = scheme + "://" + domain
+	}
+	if url != "" && !strings.EqualFold(urlKey, "none") {
 		updates[urlKey] = url
 		envInfo("  Setting %s=%s\n", urlKey, url)
 	}
@@ -1310,6 +1414,13 @@ func runEnv(_ *cobra.Command, _ []string) error {
 			return fmt.Errorf("writing %s: %w", envRelPath, writeErr)
 		}
 	}
+	// A worktree resolves to its parent site, whose record this run must not
+	// overwrite with the worktree's own wiring.
+	if config.SamePath(cwd, site.Path) {
+		if err := config.SetSiteWiredServices(site.Name, slices.Sorted(maps.Keys(wired))); err != nil {
+			feedback.Warn("could not record the services wired into %s: %v", site.Name, err)
+		}
+	}
 
 	// 5b. A framework caches the container definitions it builds from this
 	//     configuration, so one built against the old database outlives the
@@ -1354,13 +1465,12 @@ func runEnv(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	// 7. Worktrees share the parent site's database SERVER (only DB_DATABASE
-	// differs, and only when isolated). Their .env was copied once at creation,
-	// so after this run realigned the parent to the selected services, mirror
-	// the connection coordinates into each worktree .env too — otherwise a
-	// worktree captured before a service switch (e.g. postgres -> postgres-18)
-	// keeps pointing at a host that no longer resolves.
-	alignWorktreeEnvDBConnection(site, envPath, envRelPath, envFormat)
+	// 7. Worktrees keep their own env, copied once at creation, and are not
+	// sites a sweep can reach, so whatever this run moved in the parent has to
+	// be carried into them from here.
+	if branch == "" {
+		alignWorktreeEnvs(site, fw, envPath, envRelPath, envFormat, envMap, envOverrides)
+	}
 
 	// The connection a JetBrains project points at is rebuilt from the same
 	// resolution, so a database or an engine that changed here reaches the IDE
@@ -1382,59 +1492,84 @@ func runEnv(_ *cobra.Command, _ []string) error {
 // the isolated-DB logic (or the parent value for a non-isolated worktree).
 var worktreeDBConnectionKeys = []string{"DB_CONNECTION", "DB_HOST", "DB_PORT", "DB_USERNAME", "DB_PASSWORD"}
 
-// alignWorktreeEnvDBConnection mirrors the parent's (just-aligned) DB connection
-// coordinates into each existing worktree env file. It is the worktree arm of
-// `lerd env`'s "make the env match the selected services" guarantee. Best
-// effort: a worktree without an env file yet is skipped (it'll be seeded on its
-// next sync), and ApplyUpdates no-ops when nothing changed.
+// worktreeEnvTarget is the database and domain a worktree's env names. A
+// worktree is not a registered site, so deriving them from its folder, as for
+// a site, would rename its database after the checkout: it keeps its isolated
+// database when it has one and the parent's otherwise, on its branch domain.
+func worktreeEnvTarget(site *config.Site, branch string) (dbName, domain string) {
+	dbName = projectDBName(site.Path)
+	if e, ok, err := config.FindWorktreeDB(site.Name, branch); err == nil && ok {
+		dbName = e.DBName
+	}
+	return dbName, branch + "." + site.PrimaryDomain()
+}
+
+// carriedToWorktrees is the parent's env values, less the keys its
+// .env.lerd_override sets: an override is personal to the checkout it sits in.
+func carriedToWorktrees(vals, overrides map[string]string) map[string]string {
+	carried := maps.Clone(vals)
+	for k := range overrides {
+		delete(carried, k)
+	}
+	return carried
+}
+
+// alignWorktreeEnvs is the worktree arm of `lerd env`. The DB connection
+// coordinates are mirrored outright. Any other value this run changed in the
+// parent follows only where the worktree still holds the parent's old value:
+// a service host moved by a runtime switch does, while a worktree's own
+// database, bucket or URL never equalled the parent's and is left alone.
+// Running lerd env in the worktree instead would rename its database after
+// the checkout folder, since a worktree is not a registered site.
 //
-// Scoped to the dotenv format: the connection keys are Laravel-style, and the
-// php-const / php-array formats use a different writer and key set, so they are
-// left to their own env detection. envRelPath is the framework-resolved env file
-// path so a worktree of a framework whose env file isn't ".env" is still targeted.
-func alignWorktreeEnvDBConnection(site *config.Site, mainEnvPath, envRelPath, envFormat string) {
-	// Empty means the caller never resolved a format, which is dotenv.
-	if site == nil || (envFormat != "" && envFormat != "dotenv") {
+// Scoped to dotenv, the format both the keys and the writer here assume. A
+// worktree without an env file yet is skipped; it is seeded on its next sync.
+func alignWorktreeEnvs(site *config.Site, fw *config.Framework, mainEnvPath, envRelPath, envFormat string, before, overrides map[string]string) {
+	// A format this binary cannot write is refused by the writer below rather
+	// than guessed at, the way every other write of an env file is.
+	if site == nil || !envfile.KnownFormat(envFormat) {
 		return
 	}
 	worktrees, err := gitpkg.DetectWorktrees(site.Path, site.PrimaryDomain())
 	if err != nil || len(worktrees) == 0 {
 		return
 	}
-	mainVals := envfile.ReadValues(mainEnvPath)
+	// The parent's .env already holds what its override pinned, so both sides
+	// drop those keys before anything is handed on.
+	before = carriedToWorktrees(before, overrides)
+	after := carriedToWorktrees(envfile.Values(mainEnvPath, envFormat), overrides)
 	coords := map[string]string{}
 	for _, k := range worktreeDBConnectionKeys {
-		if v := mainVals[k]; v != "" {
+		if v := after[k]; v != "" {
 			coords[k] = v
 		}
-	}
-	if len(coords) == 0 {
-		return
 	}
 	for _, wt := range worktrees {
 		wtEnv := filepath.Join(wt.Path, envRelPath)
 		if _, statErr := os.Stat(wtEnv); statErr != nil {
 			continue
 		}
-		// Only touch worktrees whose coordinates actually drifted, so a steady
-		// state stays silent and the file's mtime is left alone. One read of the
-		// worktree env covers every key compared.
-		wtVals := envfile.ReadValues(wtEnv)
-		drifted := false
+		wtVals := envfile.Values(wtEnv, envFormat)
+		updates := map[string]string{}
 		for k, v := range coords {
 			if wtVals[k] != v {
-				drifted = true
-				break
+				updates[k] = v
 			}
 		}
-		if !drifted {
+		maps.Copy(updates, envfile.CarriedValues(wtVals, before, after))
+		// A worktree that predates the runtime switch holds the container names
+		// its parent has since moved off, so it matches neither the parent's old
+		// value nor its new one and the carry above walks past it.
+		maps.Copy(updates, staleServiceCarry(fw, wtVals, after))
+		// A steady state stays silent and leaves the file's mtime alone.
+		if len(updates) == 0 {
 			continue
 		}
-		if err := envfile.ApplyUpdates(wtEnv, coords); err != nil {
+		if err := envfile.ApplyUpdatesIn(wtEnv, envFormat, updates); err != nil {
 			feedback.Warn("aligning worktree %s .env: %v", wt.Branch, err)
 			continue
 		}
-		envInfo("  Aligned worktree %s DB connection\n", wt.Branch)
+		envInfo("  Aligned worktree %s env\n", wt.Branch)
 	}
 }
 
@@ -1478,6 +1613,9 @@ var ensureServiceRunning = func(name string) error {
 		// stderr: a passthrough child (php/console, e.g. a framework MCP server)
 		// owns stdout, and a progress line there corrupts its protocol stream.
 		envInterrupt(func() { fmt.Fprintf(os.Stderr, "  Starting %s...\n", name) })
+	}
+	if awaitIdleWake(name) {
+		return nil
 	}
 	return serviceops.EnsureServiceRunning(name)
 }
@@ -1558,7 +1696,7 @@ func siteURL(path string) string {
 		return ""
 	}
 	for _, s := range reg.Sites {
-		if s.Path == path {
+		if config.SamePath(s.Path, path) {
 			scheme := "http"
 			if s.Secured {
 				scheme = "https"
@@ -1627,7 +1765,8 @@ func consoleExecArgs(dir, version, console string, args ...string) []string {
 
 	container := fpmContainerForDir(dir, version)
 
-	cmdArgs := []string{"exec", "-i", "-w", dir, container, "php", console}
+	cmdArgs := append([]string{"exec", "-i", "-w", dir}, debugSiteEnvArgs(dir)...)
+	cmdArgs = append(cmdArgs, container, "php", console)
 	return append(cmdArgs, args...)
 }
 
@@ -1636,6 +1775,12 @@ func consoleIn(dir, console string, args ...string) error {
 	if err != nil {
 		cfg, _ := config.LoadGlobal()
 		version = cfg.PHP.DefaultVersion
+	}
+	if console == "" {
+		console = "artisan"
+	}
+	if took, err := execOnHostIfNative(dir, append([]string{"php", console}, args...)); took {
+		return err
 	}
 
 	cmd := podman.Cmd(consoleExecArgs(dir, version, console, args...)...)

@@ -61,13 +61,17 @@ func newWorktreeRemoveCmd() *cobra.Command {
 				wtBase = filepath.Base(last)
 			}
 
+			// A worker still running writes into the tree git is deleting and
+			// makes the removal fail, so stop them first. Their units are
+			// removed below, once git has succeeded.
+			stopWorktreeUnitsFn(site.Name, wtBase)
 			if err := runGitWorktreeRemove(args); err != nil {
 				return err
 			}
 
-			// Stop any per-worktree worker units before they restart-loop
-			// against the now-deleted WorkingDirectory. Best-effort — a
-			// failure here is a warning, not a hard error.
+			// Remove the per-worktree worker units so they cannot restart-loop
+			// against the now-deleted WorkingDirectory. Best-effort, a failure
+			// here is a warning, not a hard error.
 			if wtBase != "" {
 				if err := StopAllWorkersForWorktree(site.Name, wtBase); err != nil {
 					feedback.Warn("stopping worktree workers: %v", err)
@@ -110,7 +114,7 @@ func worktreeDBPromptPlan(interactive bool, dbName, service string) (string, boo
 	if interactive {
 		return "", true
 	}
-	return fmt.Sprintf("no terminal to ask on, keeping the isolated database %q in %q. Drop it with 'lerd db:drop %s' when you no longer need it", dbName, service, dbName), false
+	return fmt.Sprintf("no terminal to ask on, keeping the isolated database %q in %q. Drop it with DROP DATABASE %s in 'lerd db:shell' when you no longer need it", dbName, service, dbName), false
 }
 
 func promptDeleteIsolatedDB(site *config.Site, branch string) error {
@@ -176,6 +180,9 @@ func runGitWorktreeRemove(args []string) error {
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
 
+	if !isInteractive() {
+		return fmt.Errorf("the worktree has modified or untracked files; rerun with --force to discard them")
+	}
 	var picked string
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewSelect[string]().

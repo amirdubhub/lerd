@@ -41,7 +41,7 @@ The installer will:
 ::: info Setup asks for sudo once, up front
 Everything `lerd install` needs root for happens in one step at the very start, before any downloading or container work: the unprivileged-port sysctl so nginx can bind 80 and 443, systemd linger so your containers survive logout, and a passwordless sudoers rule for the DNS resolver operations. It runs as `sudo lerd bootstrap --system`, the same command the apt package runs as root, so both routes apply identical settings. The mkcert CA is trusted in the system store the same way once it has been generated.
 
-Reinstalling for an update or a test reuses what is already in place and does not ask again, and if a step cannot run through `sudo` it falls back to prompting for each one separately. Uninstalling takes the sudoers rule and the CA back out, so both last exactly as long as lerd does.
+Reinstalling for an update or a test reuses what is already in place and does not ask again, and if a step cannot run through `sudo` it falls back to prompting for each one separately. Uninstalling takes the sudoers rule and the CA back out, so both last exactly as long as lerd does, including a rule a package's `lerd bootstrap --system` wrote.
 :::
 
 After install, reload your shell or open a new terminal so `PATH` takes effect.
@@ -59,7 +59,7 @@ On Omarchy a fresh install also turns the system tray off (`lerd tray off`) and 
 7. Enable the `lerd-watcher` background service (auto-discovers new projects)
 8. Add `~/.local/share/lerd/bin` to your shell's `PATH`
 
-The downloaded tools are pinned to explicit versions, so a fresh install always gets the same Composer, fnm and mkcert regardless of what upstream shipped that day. The pins live in a small manifest published in the lerd repository: the binary fetches it before downloading and falls back to its embedded copy when offline, so a broken pin can be fixed for every install without waiting for a release. Downloads retry transient network and server errors with a short backoff, and a stalled transfer is cancelled and retried instead of hanging, so a momentary CDN hiccup doesn't abort the install. Already-installed tools are never touched by an upgrade; `lerd status` shows their versions and `lerd tools:update` brings them to the current pins when you want that.
+The downloaded tools are pinned to explicit versions, so a fresh install always gets the same Composer, fnm and mkcert regardless of what upstream shipped that day. The pins live in a small manifest published in the lerd repository: the binary fetches it before downloading and falls back to its embedded copy when offline, so a broken pin can be fixed for every install without waiting for a release. Downloads retry transient network and server errors with a short backoff, and a stalled transfer is cancelled and retried instead of hanging, so a momentary CDN hiccup doesn't abort the install. Already-installed tools are never touched by an upgrade; `lerd status` shows their versions and `lerd tools:update` brings them to the current pins when you want that. That includes the mise lerd installs as the Node manager when the host has none; a mise you installed yourself stays yours, and lerd never lists or replaces it.
 
 ::: info Running alongside Laravel Herd or another local stack
 If another tool is already serving sites on ports 80/443 (Laravel Herd, a system nginx/Apache) or holding the DNS port, install prints a warning naming each busy port and how to find the process. Install still continues, so stop the other stack to free the ports first, otherwise `lerd-nginx` and `lerd-dns` will fail to start.
@@ -206,7 +206,7 @@ Stops all containers, disables and removes Quadlet units, removes the watcher se
 
 Four opt-in prompts before finishing:
 
-1. **Remove all config and data**: deletes `~/.config/lerd` and `~/.local/share/lerd` (takes your `sites.yaml`, bundled binaries, TLS certs, and all service data with it). Global npm packages that the `npm` shim installed into lerd's managed prefix are not silently lost: when a system npm exists you're offered a reinstall into your own prefix first, and otherwise the exact `npm install -g …` line to run afterwards is printed.
+1. **Remove all config and data**: deletes `~/.config/lerd` and `~/.local/share/lerd` (takes your `sites.yaml`, bundled binaries, TLS certs, and all service data with it). Global npm packages that the `npm` shim installed into lerd's managed prefix are not silently lost: when a system npm exists you're offered a reinstall into your own prefix first, and otherwise the exact `npm install -g …` line to run afterwards is printed. Keeping them also keeps a note of the built-in services that were installed, so the next install brings back the ones no site lists as well, unless you have removed one with `lerd service remove` since.
 2. **Remove MCP integration**: unregisters lerd from Claude Code, Cursor, Windsurf, and Junie at user scope, removes `~/.claude/skills/lerd/`, `~/.cursor/rules/lerd.mdc`, and strips the lerd block from `~/.junie/guidelines.md`. Also runs across every registered site to clean the same files per-project.
 3. **Uninstall mkcert CA**: runs `mkcert -uninstall` so browsers and OS trust stores stop trusting the lerd CA that `install` originally added.
 4. **Purge lerd-built container images**: removes `lerd-php*-fpm:local`, `lerd-custom-*:local`, and `lerd-dnsmasq:local`. Upstream pulled images (mysql/redis/postgres/etc.) are deliberately left alone; they're expensive to re-pull and your database/app data lives in host bind mounts, not inside the images, so nothing is lost by keeping them.
@@ -217,11 +217,19 @@ To answer yes to every prompt without interaction:
 lerd uninstall --force
 ```
 
+To uninstall without prompts but keep your config, databases and images for a later reinstall, the unattended form of answering no to prompts 1 and 4 and yes to 2 and 3:
+
+```bash
+lerd uninstall --keep-data
+```
+
+Run without a terminal and without either flag, `lerd uninstall` cannot ask, so it stops before touching anything and exits with an error.
+
 If lerd came from apt, dnf or Homebrew, the teardown is the same but the binary stays where it is: deleting a file the package manager owns would leave it believing lerd is still installed. `lerd uninstall` prints the matching removal command at that step, so finish with `sudo apt remove lerd`, `sudo dnf remove lerd` or `brew uninstall lerd`.
 
-The installer's own `--uninstall` stops the user units and removes the binary, but the DNS setup lives outside your home directory and only lerd can take it back out: the `lerd0` link unit, the NetworkManager rules and dispatcher, the drop-in that empties `FallbackDNS`, and the passwordless sudoers rule the DNS operations run under. So when it finds that configuration it offers to run `lerd dns:disable` first, and prints the root commands to clear it by hand if you decline or the binary has already gone.
+On Omarchy `lerd uninstall` also takes the Lerd Glance plugin off the bar.
 
-On Omarchy the installer's `--uninstall` also removes the Lerd Glance plugin from the bar.
+The installer's `--uninstall` runs `lerd uninstall`, so it does exactly the same teardown.
 
 ---
 
@@ -301,11 +309,10 @@ The install registers the app with LaunchServices, so it appears in Launchpad an
 ### Uninstall
 
 ```bash
-lerd uninstall                                    # tears down launchd agents, DNS resolver, containers
-curl -fsSL https://lerd.sh/install.sh | bash -s -- --uninstall
+lerd uninstall
 ```
 
-Run `lerd uninstall` first (while the binary is still present) so the DNS resolver and Podman state are cleaned up, then the installer's `--uninstall` removes the launchd agents and the binary. If you installed via Homebrew, finish with `brew uninstall lerd` instead of the second command. On macOS the installer detects when the binary is still present and pauses to remind you to run `lerd uninstall` first, since the DNS resolver (`/etc/resolver/test`, removed with sudo) and the Podman machine are unreachable once the binary is gone; if it can't reach a terminal it prints the manual removal commands at the end instead.
+Tears down the launchd agents, the DNS resolver and the containers, then removes the binary. The Podman machine stays, remove it with `podman machine rm` if nothing else uses it. If you installed via Homebrew, finish with `brew uninstall lerd`.
 
 ## Windows (beta)
 

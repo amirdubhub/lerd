@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { dashboardOpen, closeDashboard } from '$stores/dashboard';
+  import { dashboardOpen, closeDashboard, keepServiceAwake } from '$stores/dashboard';
+  import { services } from '$stores/services';
   import ServiceIcon from './ServiceIcon.svelte';
   import {
     profilerEnabled,
@@ -48,6 +49,15 @@
   // The SPX Configuration form is collapsed by default so the report list
   // gets the whole view; the header button restores it on demand.
   let configHidden = $state(true);
+
+  // While a service's dashboard is open it counts as in use, so idle-suspend
+  // leaves it (and what it needs) awake until the overlay closes.
+  const openName = $derived($dashboardOpen?.name);
+  const openIsService = $derived(!!openName && $services.some((s) => s.name === openName));
+  $effect(() => {
+    if (!openName || !openIsService) return;
+    return keepServiceAwake(openName);
+  });
 
   const isProfiler = $derived($dashboardOpen?.name === 'profiler');
   // The documentation is served by the daemon out of the embedded pages, so it
@@ -231,7 +241,7 @@
 {#if $dashboardOpen}
   {@const d = $dashboardOpen}
   {@const iframeSrc = joinDashboardPath(d.dashboard, d.extraPath)}
-  <div class="fixed top-0 right-0 left-0 bottom-16 md:left-14 md:bottom-0 z-30 flex flex-col bg-white dark:bg-lerd-bg md:bg-lerd-chrome-light md:dark:bg-lerd-card">
+  <div class="fixed top-0 right-0 left-0 bottom-16 md:left-14 md:bottom-0 z-30 flex flex-col bg-white dark:bg-lerd-bg md:bg-lerd-header-light md:dark:bg-lerd-header">
     <div class="flex items-center justify-between px-3 py-3 page-header md:border-b-0! shrink-0">
       <div class="flex items-center gap-3 min-w-0">
         {#if isProfiler && canGoBack}
@@ -305,7 +315,7 @@
       </div>
     </div>
     <!-- On desktop the header line moves onto the frame's top border so the corner can curve. -->
-    <div class="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-lerd-bg md:border-l md:border-t md:rounded-tl-xl border-lerd-chromeborder dark:border-lerd-border">
+    <div class="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-lerd-bg md:border-l md:border-t md:rounded-tl-xl border-lerd-headerborder">
       {#if isDocs}
         <DocsViewer />
       {:else}
@@ -319,7 +329,7 @@
             bind:this={iframeEl}
             onload={onIframeLoad}
             src={iframeSrc}
-            class="flex-1 w-full bg-white border-0"
+            class="flex-1 w-full bg-white dark:bg-lerd-bg border-0"
             title={d.label || d.name}
           ></iframe>
         {/key}

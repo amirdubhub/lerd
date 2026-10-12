@@ -247,6 +247,8 @@ A URL a script computes at call time is past rebasing, since it does not exist i
 
 Some dashboards cannot be moved at all. RustFS's console is a Next build rooted at `/rustfs/console`, with that path compiled into its own routing, so `dashboard_proxy_at_path` serves it there instead of under the mount, and the `/_svc/<name>/` mount stays for what the page asks of the upstream's root. The lerd vhost names the path alongside its own, so nothing has to be registered by hand. Such a dashboard usually signs its requests, and a signature covers the `Host` header, so `dashboard_proxy_keep_host` forwards the Host the browser sent rather than the upstream's, or every call the page makes is rejected.
 
+A dashboard that remembers its own language in a cookie, the way phpMyAdmin keeps `pma_lang`, would hold on to it after a language is picked in lerd, since it reads that cookie ahead of the `Accept-Language` the proxy sends. `dashboard_locale_cookies` names those cookies, and the proxy leaves them out of each request while lerd has a language picked.
+
 An embedded dashboard wears the theme lerd is wearing rather than the one the browser is set to. Most of them ship their dark half behind a `prefers-color-scheme` query, and the overlay flips that query where it finds it, on the link or inside the sheet. An app that reads the preference from JavaScript instead is out of reach of that, so `dashboard_follows_color_scheme` has lerd answer the question directly, which is how pgAdmin gets its own dark design: it ships its theme preference set to `system` and asks the browser which scheme it is in.
 
 A dashboard with no dark design at all, phpMyAdmin being the case in point, is turned around instead: lerd reads the greys off its own stylesheet and maps them onto the palette, so what the design used for its page becomes the page and what it used for text becomes the tone text reads in. A colour carrying a hue keeps it and is only moved far enough to be read, and every pair is held to the WCAG AA floor.
@@ -316,7 +318,7 @@ Raise this only for services that flush on shutdown. A longer window on an image
 
 ## Pinning services
 
-By default, lerd can auto-stop services that no active site references, either in its `.lerd.yaml` or in the env file its framework declares (`.env`, `wp-config.php`, `app/etc/env.php`, whichever the definition names). Use `pin` to keep a service running regardless of which sites are active:
+By default, lerd can auto-stop services that no active site references, whether in its `.lerd.yaml`, in the env file its framework declares (`.env`, `wp-config.php`, `app/etc/env.php`, whichever the definition names), or in what `lerd env` last wired into it. Use `pin` to keep a service running regardless of which sites are active:
 
 ```bash
 lerd service pin mysql    # always keep MySQL running
@@ -333,7 +335,7 @@ Pinned services are shown with a `[pinned]` note in `lerd service list` and the 
 
 ## Manually stopped services
 
-If you stop a service with `lerd service stop` (or via the web UI), lerd records it as **manually paused**. `lerd start` and autostart on login will skip it; the service stays stopped until you explicitly start it again.
+If you stop a service with `lerd service stop` (or via the web UI), lerd records it as **manually paused**. `lerd start` and autostart on login will skip it; the service stays stopped until you explicitly start it again. Anything else that starts it on purpose ends the pause too: `lerd env` or `lerd link` on a site that needs it, a `lerd db` command against it, or a service that depends on it. Once it is running again it is no longer paused, so the next `lerd start` brings it back like any other.
 
 `lerd stop` + `lerd start` restores the previous state: services that were running before `lerd stop` start again; services you had manually stopped remain stopped.
 
@@ -351,7 +353,7 @@ phpmyadmin           active  [custom]
   depends on: mysql
 ```
 
-- **no sites using this service**: the service was auto-stopped because no active site references it, in its `.lerd.yaml` or in the env file its framework declares
+- **no sites using this service**: the service was auto-stopped because no active site references it, in its `.lerd.yaml`, in the env file its framework declares, or in what `lerd env` last wired into it
 - **depends on: ...**: the service has declared dependencies (see "Service dependencies" below)
 
 ## Service dependencies

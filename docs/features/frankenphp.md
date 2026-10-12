@@ -84,6 +84,8 @@ lerd worker start queue       # Laravel
 lerd worker start messenger   # Symfony
 ```
 
+Starting a worker leaves the site's nginx vhost alone: a FrankenPHP site keeps proxying to `lerd-fp-<site>:8000`, so a worker restart never sends requests back to the shared PHP-FPM service.
+
 ---
 
 ## Worker mode on vs off

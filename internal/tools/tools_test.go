@@ -513,3 +513,141 @@ func TestEmbeddedManifest_hostPHPIsPinnedAndDigestedEverywhere(t *testing.T) {
 		}
 	}
 }
+
+// A rebuild of an already published patch keeps its version, so the publish
+// date is what tells an install it is holding the older build. It is recorded
+// beside the version stamp and cleared when a pin carries no date, so a manifest
+// that stops publishing one does not leave a stale answer behind.
+func TestPublishedStampRoundTrip(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	const name = "php-native-8.4"
+
+	if got := InstalledPublished(name); got != "" {
+		t.Errorf("with no binary, published = %q, want empty", got)
+	}
+
+	path := binPath(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("bin dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	if got := InstalledPublished(name); got != "" {
+		t.Errorf("with nothing recorded, published = %q, want empty", got)
+	}
+
+	const stamp = "2026-09-28T12:00:00Z"
+	if err := WritePublished(name, stamp); err != nil {
+		t.Fatalf("WritePublished: %v", err)
+	}
+	if got := InstalledPublished(name); got != stamp {
+		t.Errorf("published = %q, want %q", got, stamp)
+	}
+
+	if err := WritePublished(name, ""); err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	if got := InstalledPublished(name); got != "" {
+		t.Errorf("after clearing, published = %q, want empty", got)
+	}
+	// Clearing twice is how a pin with no date behaves on every later install.
+	if err := WritePublished(name, ""); err != nil {
+		t.Fatalf("clearing an absent stamp: %v", err)
+	}
+}
+
+// writeHostMise puts a mise binary where both lerd and mise's own installer put
+// it, and returns its path.
+func writeHostMise(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, ".local", "bin", "mise")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(config.BinDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+func statusOf(name string) (ToolStatus, bool) {
+	for _, s := range StatusAll(context.Background()) {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return ToolStatus{}, false
+}
+
+// A mise lerd installed and mise then moved off the pin, the way
+// `mise self-update` does, is reported against the pin like the other tools.
+func TestStatusAll_FlagsALerdInstalledMiseThatSelfUpdated(t *testing.T) {
+	offline(t)
+	bin := writeHostMise(t)
+	pin := embeddedManifest().Tools["mise"].Version
+	if err := WriteStamp("mise", pin); err != nil {
+		t.Fatal(err)
+	}
+	reported := strings.TrimPrefix(pin, "v")
+	orig := probeOutput
+	t.Cleanup(func() { probeOutput = orig })
+	probeOutput = func(path string, args ...string) ([]byte, error) {
+		if path != bin || len(args) != 1 || args[0] != "--version" {
+			t.Errorf("probed %s %v, want %s --version", path, args, bin)
+		}
+		return []byte(reported + " linux-x64 (2026-09-20)\n"), nil
+	}
+	if s, _ := statusOf("mise"); !s.Present || s.UpdateAvailable {
+		t.Fatalf("mise at its pin = %+v, want present with no update", s)
+	}
+
+	reported = "2026.10.2"
+	if s, _ := statusOf("mise"); !s.Present || !s.UpdateAvailable || s.Installed != "2026.10.2" {
+		t.Fatalf("self-updated mise = %+v, want present at 2026.10.2 with an update", s)
+	}
+}
+
+// `mise self-update` run right after lerd installed mise leaves the binary
+// barely newer than the stamp; the version still has to come from the binary.
+func TestInstalledVersion_SeesAMiseThatSelfUpdatedRightAway(t *testing.T) {
+	offline(t)
+	writeHostMise(t)
+	if err := WriteStamp("mise", embeddedManifest().Tools["mise"].Version); err != nil {
+		t.Fatal(err)
+	}
+	orig := probeOutput
+	t.Cleanup(func() { probeOutput = orig })
+	probeOutput = func(string, ...string) ([]byte, error) {
+		return []byte("2026.10.2 linux-x64 (2026-10-04)\n"), nil
+	}
+
+	if v := InstalledVersion("mise"); v != "2026.10.2" {
+		t.Fatalf("InstalledVersion(mise) = %q, want the self-updated 2026.10.2", v)
+	}
+}
+
+// A mise the user installed themselves sits in the same place, and lerd must
+// neither list it as its own nor claim it by stamping what it probed.
+func TestStatusAll_LeavesOutAMiseLerdDidNotInstall(t *testing.T) {
+	offline(t)
+	writeHostMise(t)
+	orig := probeOutput
+	t.Cleanup(func() { probeOutput = orig })
+	probeOutput = func(string, ...string) ([]byte, error) { return []byte("2026.10.2\n"), nil }
+
+	if s, ok := statusOf("mise"); ok {
+		t.Fatalf("the user's own mise is listed as managed: %+v", s)
+	}
+	if v := InstalledVersion("mise"); v != "" {
+		t.Errorf("InstalledVersion(mise) = %q for a mise lerd did not install", v)
+	}
+	if _, err := os.Stat(filepath.Join(config.BinDir(), "mise.version")); err == nil {
+		t.Error("probing the user's mise stamped it as lerd's")
+	}
+}

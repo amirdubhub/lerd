@@ -523,6 +523,9 @@ func watchPlaywrightBoot(ctx context.Context, cmd *exec.Cmd) (bool, string) {
 	cmd.Stderr = w
 
 	if err := cmd.Start(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return false, bootTimeoutMessage("")
+		}
 		return false, err.Error()
 	}
 
@@ -537,17 +540,21 @@ func watchPlaywrightBoot(ctx context.Context, cmd *exec.Cmd) (bool, string) {
 	case <-exited:
 		out := w.output()
 		if ctx.Err() == context.DeadlineExceeded {
-			msg := fmt.Sprintf("timed out after %s waiting for the server to start", pestServerBootTimeout)
-			if out != "" {
-				msg += "\n" + out
-			}
-			return false, msg
+			return false, bootTimeoutMessage(out)
 		}
 		if out == "" {
 			out = "the server exited without output"
 		}
 		return false, out
 	}
+}
+
+func bootTimeoutMessage(out string) string {
+	msg := fmt.Sprintf("timed out after %s waiting for the server to start", pestServerBootTimeout)
+	if out != "" {
+		msg += "\n" + out
+	}
+	return msg
 }
 
 // readyWatcher accumulates a process's combined output and closes found the

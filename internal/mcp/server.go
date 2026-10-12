@@ -312,6 +312,11 @@ func isKnownService(name string) bool { return config.IsDefaultPreset(name) }
 // never prompts: it starts an installed-but-stopped container, or returns a
 // tool-error body (install hint / start failure) for the caller to hand back to
 // the client. Returns nil when the container is already running or just started.
+// wakeSiteServicesMCP wakes what a project's code is about to reach: the
+// activity ping every call sends wakes it too, but in the background, and the
+// command would race it.
+var wakeSiteServicesMCP = serviceops.WakeSiteServices
+
 func ensureFPMStartedMCP(phpVersion, short, container string) map[string]any {
 	err := phpDet.StartFPM(phpVersion, container)
 	if err == nil {
@@ -338,14 +343,24 @@ func execArtisan(args map[string]any) (any, *rpcError) {
 		return toolErr(err.Error()), nil
 	}
 
+	consoleCmd, err := config.GetConsoleCommand(projectPath)
+	if err != nil {
+		return toolErr(err.Error()), nil
+	}
+	if nativeRuntime() {
+		var out bytes.Buffer
+		if err := runOnHost(projectPath, append([]string{"php", consoleCmd}, artisanArgs...), &out); err != nil {
+			return toolErr(fmt.Sprintf("artisan failed (%v):\n%s", err, stripANSI(out.String()))), nil
+		}
+		return toolOK(stripANSI(strings.TrimSpace(out.String()))), nil
+	}
+
 	short := strings.ReplaceAll(phpVersion, ".", "")
 	container := phpDet.FPMContainerForDir(projectPath, phpVersion)
 	if errBody := ensureFPMStartedMCP(phpVersion, short, container); errBody != nil {
 		return errBody, nil
 	}
-
-	consoleCmd, err := config.GetConsoleCommand(projectPath)
-	if err != nil {
+	if err := wakeSiteServicesMCP(projectPath); err != nil {
 		return toolErr(err.Error()), nil
 	}
 
@@ -355,6 +370,7 @@ func execArtisan(args map[string]any) (any, *rpcError) {
 		cmdArgs = append(cmdArgs, "--env", e)
 	}
 	cmdArgs = append(cmdArgs, envpass.Args(projectPath, os.Environ())...)
+	cmdArgs = append(cmdArgs, phpDet.SiteEnvArgs(projectPath)...)
 	cmdArgs = append(cmdArgs, container, "php", consoleCmd)
 	cmdArgs = append(cmdArgs, artisanArgs...)
 
@@ -457,6 +473,10 @@ func execServiceStart(args map[string]any) (any, *rpcError) {
 	name := strArg(args, "name")
 	if name == "" {
 		return toolErr("name is required"), nil
+	}
+	pending, _ := serviceops.ActionDownload(name, "start", "")
+	if gate := downloadGate(args, pending, "Starting "+name); gate != nil {
+		return gate, nil
 	}
 	if err := serviceops.StartService(name); err != nil {
 		return toolErr("starting " + name + ": " + err.Error()), nil
@@ -811,11 +831,11 @@ After=network.target
 Type=simple
 Restart=on-failure
 RestartSec=5
-ExecStart=%s run --rm --replace --name %s --network host %s listen --api-key %s --forward-to %s --skip-verify
+ExecStart=%s
 
 [Install]
 WantedBy=default.target
-`, siteName, podman.PodmanBin(), containerName, podman.StripeCLIImage, apiKey, forwardTo)
+`, siteName, podman.StripeListenExecStart(containerName, apiKey, forwardTo))
 
 	if err := lerdSystemd.WriteService(unitName, unit); err != nil {
 		return toolErr("writing service unit: " + err.Error()), nil
@@ -890,6 +910,7 @@ func composerExecArgs(container, workdir string, env, composerArgs []string) []s
 		args = append(args, "--env", e)
 	}
 	args = append(args, envpass.Args(workdir, os.Environ())...)
+	args = append(args, phpDet.SiteEnvArgs(workdir)...)
 	args = append(args, container, "php", composer.PharPath())
 	return append(args, composerArgs...)
 }
@@ -909,10 +930,21 @@ func execComposer(args map[string]any) (any, *rpcError) {
 		return toolErr(err.Error()), nil
 	}
 
+	if nativeRuntime() {
+		var out bytes.Buffer
+		if err := runOnHost(projectPath, append([]string{"php", composer.PharPath()}, composerArgs...), &out, composer.ProcessTimeoutEnv()); err != nil {
+			return toolErr(fmt.Sprintf("composer failed (%v):\n%s", err, stripANSI(out.String()))), nil
+		}
+		return toolOK(stripANSI(strings.TrimSpace(out.String()))), nil
+	}
+
 	short := strings.ReplaceAll(phpVersion, ".", "")
 	container := phpDet.FPMContainerForDir(projectPath, phpVersion)
 	if errBody := ensureFPMStartedMCP(phpVersion, short, container); errBody != nil {
 		return errBody, nil
+	}
+	if err := wakeSiteServicesMCP(projectPath); err != nil {
+		return toolErr(err.Error()), nil
 	}
 
 	cmdArgs := composerExecArgs(container, projectPath, agentenv.MCPInject(os.Environ()), composerArgs)
@@ -979,10 +1011,21 @@ func execVendorRun(args map[string]any) (any, *rpcError) {
 		return toolErr(err.Error()), nil
 	}
 
+	if nativeRuntime() {
+		var out bytes.Buffer
+		if err := runOnHost(projectPath, append([]string{"php", "vendor/bin/" + bin}, binArgs...), &out); err != nil {
+			return toolErr(fmt.Sprintf("vendor/bin/%s failed (%v):\n%s", bin, err, stripANSI(out.String()))), nil
+		}
+		return toolOK(stripANSI(strings.TrimSpace(out.String()))), nil
+	}
+
 	short := strings.ReplaceAll(phpVersion, ".", "")
 	container := phpDet.FPMContainerForDir(projectPath, phpVersion)
 	if errBody := ensureFPMStartedMCP(phpVersion, short, container); errBody != nil {
 		return errBody, nil
+	}
+	if err := wakeSiteServicesMCP(projectPath); err != nil {
+		return toolErr(err.Error()), nil
 	}
 
 	cmdArgs := []string{"exec", "-w", projectPath}
@@ -990,6 +1033,7 @@ func execVendorRun(args map[string]any) (any, *rpcError) {
 		cmdArgs = append(cmdArgs, "--env", e)
 	}
 	cmdArgs = append(cmdArgs, envpass.Args(projectPath, os.Environ())...)
+	cmdArgs = append(cmdArgs, phpDet.SiteEnvArgs(projectPath)...)
 	cmdArgs = append(cmdArgs, container, "php", "vendor/bin/"+bin)
 	cmdArgs = append(cmdArgs, binArgs...)
 
@@ -1723,6 +1767,7 @@ type presetEntry struct {
 	Icon           string               `json:"icon,omitempty"`
 	Dashboard      string               `json:"dashboard,omitempty"`
 	AdminFor       []string             `json:"admin_for,omitempty"`
+	SuggestFor     []string             `json:"suggest_for,omitempty"`
 	DependsOn      []string             `json:"depends_on,omitempty"`
 	Installed      bool                 `json:"installed"`
 	DefaultVersion string               `json:"default_version,omitempty"`
@@ -1738,6 +1783,7 @@ func newPresetEntry(p config.PresetMeta) presetEntry {
 		Icon:           p.Icon,
 		Dashboard:      p.Dashboard,
 		AdminFor:       p.AdminFor,
+		SuggestFor:     p.SuggestFor,
 		DependsOn:      p.DependsOn,
 		DefaultVersion: p.DefaultVersion,
 	}
@@ -2370,9 +2416,8 @@ func execSiteDomainAdd(args map[string]any) (any, *rpcError) {
 	_ = podman.WriteContainerHosts()
 	_ = nginx.Reload()
 
-	if site.PrimaryDomain() != oldPrimary {
-		_ = config.SyncSiteURL(site.Path, site.PrimaryDomain(), site.Secured)
-	}
+	// Worktrees too: their URL is <branch>.<primary>, so it moves with it.
+	_ = siteops.SyncEnvIfPrimaryChanged(site, oldPrimary)
 
 	return toolOK(fmt.Sprintf("Added domain %s to site %s", fullDomain, site.Name)), nil
 }
@@ -2432,9 +2477,8 @@ func execSiteDomainRemove(args map[string]any) (any, *rpcError) {
 	_ = podman.WriteContainerHosts()
 	_ = nginx.Reload()
 
-	if site.PrimaryDomain() != oldPrimary {
-		_ = config.SyncSiteURL(site.Path, site.PrimaryDomain(), site.Secured)
-	}
+	// Worktrees too: their URL is <branch>.<primary>, so it moves with it.
+	_ = siteops.SyncEnvIfPrimaryChanged(site, oldPrimary)
 
 	return toolOK(fmt.Sprintf("Removed domain %s from site %s", fullDomain, site.Name)), nil
 }
@@ -3808,9 +3852,11 @@ func runComposerInstallIfNeeded(projectPath string, out *bytes.Buffer) error {
 	if err != nil || phpVersion == "" {
 		return fmt.Errorf("could not determine PHP version: %w", err)
 	}
-	container := phpDet.FPMContainerForDir(projectPath, phpVersion)
-
 	out.WriteString("\n\n--- composer install ---\n")
+	if nativeRuntime() {
+		return runOnHost(projectPath, []string{"php", composer.PharPath(), "install", "--no-interaction"}, out, composer.ProcessTimeoutEnv())
+	}
+	container := phpDet.FPMContainerForDir(projectPath, phpVersion)
 	cmd := podman.Cmd(composerExecArgs(container, projectPath, nil, []string{"install", "--no-interaction"})...)
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -3847,9 +3893,15 @@ func execSetup(args map[string]any) (any, *rpcError) {
 	if phpErr != nil || phpVersion == "" {
 		return toolErr("could not determine PHP version"), nil
 	}
+	native := nativeRuntime()
 	container := phpDet.FPMContainerForDir(projectPath, phpVersion)
-	if errBody := ensureFPMStartedMCP(phpVersion, strings.ReplaceAll(phpVersion, ".", ""), container); errBody != nil {
-		return errBody, nil
+	if !native {
+		if errBody := ensureFPMStartedMCP(phpVersion, strings.ReplaceAll(phpVersion, ".", ""), container); errBody != nil {
+			return errBody, nil
+		}
+	}
+	if err := wakeSiteServicesMCP(projectPath); err != nil {
+		return toolErr(err.Error()), nil
 	}
 
 	var out bytes.Buffer
@@ -3868,11 +3920,16 @@ func execSetup(args map[string]any) (any, *rpcError) {
 			continue
 		}
 		fmt.Fprintf(&out, "\n--- %s ---\n", step.Label)
-		cmdArgs := append([]string{"exec", "-i", "-w", projectPath, container}, parts...)
-		cmd := podman.Cmd(cmdArgs...)
-		cmd.Stdout = &out
-		cmd.Stderr = &out
-		if err := cmd.Run(); err != nil {
+		var runErr error
+		if native {
+			runErr = runOnHost(projectPath, parts, &out)
+		} else {
+			cmd := podman.Cmd(append([]string{"exec", "-i", "-w", projectPath, container}, parts...)...)
+			cmd.Stdout = &out
+			cmd.Stderr = &out
+			runErr = cmd.Run()
+		}
+		if err := runErr; err != nil {
 			fmt.Fprintf(&out, "[WARN] %s failed: %v\n", step.Label, err)
 			failed++
 			continue

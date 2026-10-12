@@ -4,7 +4,9 @@ import Harness from './SiteHeader.test.svelte';
 import type { Site } from '$stores/sites';
 import { frameworkMarks } from '$stores/frameworkMarks';
 import { accessMode } from '$stores/accessMode';
+import { editors } from '$stores/editors';
 import { status } from '$stores/status';
+import { status as dumpsStatus } from '$stores/dumps';
 
 const site = {
   domain: 'app.test',
@@ -112,9 +114,32 @@ describe('SiteHeader', () => {
     expect(getByRole('img', { name: 'Laravel 12' })).toBeInTheDocument();
   });
 
+  // Nothing else on the page said a site was served by FrankenPHP rather than
+  // the shared PHP-FPM, so the header carries it.
+  it('shows the FrankenPHP runtime', () => {
+    const { getByText } = render(Harness, {
+      props: { site: { ...site, runtime: 'frankenphp' } as unknown as Site }
+    });
+    const badge = getByText(/FrankenPHP/).closest('span[class*="rounded-full"]') as HTMLElement;
+    expect(badge.className).toContain('text-orange-700');
+    expect(badge.textContent).not.toContain('worker');
+  });
+
+  it('names worker mode on the FrankenPHP badge', () => {
+    const { getByText } = render(Harness, {
+      props: { site: { ...site, runtime: 'frankenphp', runtime_worker: true } as unknown as Site }
+    });
+    expect(getByText(/FrankenPHP/).textContent).toContain('worker');
+  });
+
+  it('shows no runtime badge for a PHP-FPM site', () => {
+    const { queryByText } = render(Harness, { props: { site } });
+    expect(queryByText(/FrankenPHP/)).not.toBeInTheDocument();
+  });
+
   // Group and workspace leave the bar on a narrow header, so the overflow menu carries them.
   it('offers group and workspace in the overflow menu', async () => {
-    accessMode.set({ localControl: true, lanExposed: false, checked: true });
+    accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true });
     status.update((s) => ({ ...s, workspaces: ['client-a'] }));
     const { getByLabelText, getByRole } = render(Harness, { props: { site: { ...site, name: 'app' } as unknown as Site } });
 
@@ -122,6 +147,20 @@ describe('SiteHeader', () => {
     const menu = getByRole('menu');
     expect(menu).toHaveTextContent('Group with another site');
     expect(menu).toHaveTextContent('client-a');
+  });
+
+  // The editor opens on the host's desktop, so a remote session never sees it,
+  // even one with full access.
+  it('offers the editor only on the lerd host itself', () => {
+    editors.set({ editors: [], global: 'phpstorm' });
+    accessMode.set({ localControl: true, local: false, lanExposed: true, checked: true });
+    const remote = render(Harness, { props: { site } });
+    expect(remote.queryByLabelText('Open in editor')).not.toBeInTheDocument();
+    remote.unmount();
+
+    accessMode.set({ localControl: true, local: true, lanExposed: true, checked: true });
+    const { getByLabelText } = render(Harness, { props: { site } });
+    expect(getByLabelText('Open in editor')).toBeInTheDocument();
   });
 
   describe('without git', () => {
@@ -154,4 +193,118 @@ describe('SiteHeader', () => {
       expect(queryByText('Initialize git')).not.toBeInTheDocument();
     });
   });
+
+  // Git actions run with the host user's credentials and run installs and
+  // migrations, so a remote dashboard without host authority never sees them.
+  describe('git actions', () => {
+    afterEach(() => vi.unstubAllGlobals());
+    const tracking = [{ branch: 'main', path: '/home/u/Code/app', main: true, staged: 0, modified: 0, untracked: 0, conflicted: 0, ahead: 0, behind: 1, upstream: true }];
+
+    it('offers sync and branch switching to the local dashboard', async () => {
+      accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true });
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ checkouts: tracking })))));
+      const { findByRole, getByRole } = render(Harness, { props: { site: worktreeSite } });
+      expect(await findByRole('button', { name: 'Pull from upstream' })).toBeInTheDocument();
+      expect(getByRole('button', { name: 'Switch branch' })).toBeInTheDocument();
+    });
+
+    it('offers to publish a branch that has no upstream', async () => {
+      accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true });
+      const untracked = [{ ...tracking[0], behind: 0, upstream: false, publishable: true }];
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ checkouts: untracked })))));
+      const { findByRole, queryByRole } = render(Harness, { props: { site: worktreeSite } });
+      expect(await findByRole('button', { name: 'Publish to origin' })).toBeEnabled();
+      expect(queryByRole('button', { name: 'Pull from upstream' })).toBeNull();
+    });
+
+    it('hides them from a remote session without host actions', async () => {
+      accessMode.set({ localControl: false, local: false, lanExposed: true, checked: true });
+      const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ checkouts: tracking }))));
+      vi.stubGlobal('fetch', fetchMock);
+      const { queryByRole } = render(Harness, { props: { site: worktreeSite } });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await Promise.resolve();
+      expect(queryByRole('button', { name: 'Pull from upstream' })).toBeNull();
+      expect(queryByRole('button', { name: 'Switch branch' })).toBeNull();
+    });
+  });
+
+  // The sites store hands the header a fresh site object on every refresh, which
+  // reruns the git poll; the marker must survive the gap until the answer lands.
+  describe('git marker', () => {
+    afterEach(() => vi.unstubAllGlobals());
+    const dirtyMain = [{ branch: 'main', path: '/home/u/Code/app', main: true, staged: 0, modified: 1, untracked: 0, conflicted: 0, ahead: 0, behind: 0 }];
+
+    it('keeps the last state while the next one is loading', async () => {
+      let first = true;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => {
+          if (!first) return new Promise(() => {});
+          first = false;
+          return Promise.resolve(new Response(JSON.stringify({ checkouts: dirtyMain })));
+        })
+      );
+      const { findByText, getByText, rerender } = render(Harness, { props: { site: worktreeSite } });
+      await findByText('*');
+
+      await rerender({ site: { ...worktreeSite } as Site });
+      expect(getByText('*')).toBeInTheDocument();
+    });
+
+    // The marquee is motion; the tooltip is how a clipped name reads without it.
+    it('names the full branch in the tab tooltip', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+      const { getByText } = render(Harness, { props: { site: worktreeSite } });
+      await fireEvent.mouseEnter(getByText('feat').closest('button')!);
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('feat · feat.app.test');
+    });
+
+    // Branch is the subdomain-safe name; the tooltip promises the branch as git has it.
+    it('names the git branch, not its subdomain form, in the tab tooltip', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+      const wt = { ...worktreeSite.worktrees![0], branch: 'feature-x', git_branch: 'feature/x', domain: 'feature-x.app.test' };
+      const { getByText } = render(Harness, { props: { site: { ...worktreeSite, worktrees: [wt] } as Site } });
+      await fireEvent.mouseEnter(getByText('feature-x').closest('button')!);
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('feature/x · feature-x.app.test');
+    });
+
+    it("never shows another site's state", async () => {
+      let first = true;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => {
+          if (!first) return new Promise(() => {});
+          first = false;
+          return Promise.resolve(new Response(JSON.stringify({ checkouts: dirtyMain })));
+        })
+      );
+      const { findByText, queryByText, rerender } = render(Harness, { props: { site: worktreeSite } });
+      await findByText('*');
+
+      await rerender({ site: { ...worktreeSite, domain: 'other.test' } as Site });
+      expect(queryByText('*')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('browser logs toggle', () => {
+    afterEach(() => dumpsStatus.set(null));
+    const debug = (enabled: boolean) =>
+      dumpsStatus.set({ enabled, passthrough: false, listening: true, addr: '', count: 0, subscribers: 0, last_ts: '' });
+
+    it('shows while debug capture is on', () => {
+      accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true });
+      debug(true);
+      const { getByRole } = render(Harness, { props: { site } });
+      expect(getByRole('button', { name: 'Browser' })).toBeInTheDocument();
+    });
+
+    it('hides while debug capture is off, since no page carries the script then', () => {
+      accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true });
+      debug(false);
+      const { queryByRole } = render(Harness, { props: { site } });
+      expect(queryByRole('button', { name: 'Browser' })).not.toBeInTheDocument();
+    });
+  });
 });
+

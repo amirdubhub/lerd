@@ -1,28 +1,18 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import LensSearch from '$components/LensSearch.svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { get } from 'svelte/store';
-  import { debugSearch } from '$stores/debugLens';
-  import {
-    status,
-    filterSite,
-    filterCtx,
-    filterText,
-    knownSites,
-    startDumpsStream,
-    stopDumpsStream,
-    refreshStatus,
-    clearDumps,
-    toggleDumps,
-    buildDumpGroups
-  } from '$stores/dumps';
-  import { debugEvents } from '$stores/debugEvents';
+  import { debugSearch, showTests } from '$stores/debugLens';
+  import { status, filterSite, filterCtx, filterText, refreshStatus, clearDumps, toggleDumps, flashDump } from '$stores/dumps';
+  import { lensScope, providePickRequest } from '$stores/debugEvents';
   import DumpEntry from '$components/DumpEntry.svelte';
   import TestEventsToggle from '$components/TestEventsToggle.svelte';
   import EmptyState from '$components/EmptyState.svelte';
   import Dropdown from '$components/Dropdown.svelte';
-  import LensLoadMore from '$components/LensLoadMore.svelte';
+  import LensList from '$components/LensList.svelte';
   import LensGroupLabel from '$components/LensGroupLabel.svelte';
-  import { windowGroups, LENS_PAGE } from '$lib/lensWindow';
+  import { groupLabel } from '$lib/eventGroup';
+  import { createLens, fetchFacets } from '$lib/lens';
   import { m } from '../paraglide/messages.js';
 
   interface Props {
@@ -31,8 +21,12 @@
     // are rendered. Other filters (ctx, text) remain user-controlled and
     // the global filterSite store stays untouched.
     siteScope?: string;
+    // pinned is one request's view: no toolbar, and no filter left from the Debug tab.
+    pinned?: boolean;
   }
-  let { siteScope = '' }: Props = $props();
+  let { siteScope = '', pinned = false }: Props = $props();
+  // The Debug tab narrows this to one request, or to the route a search names.
+  const scope = lensScope();
   const scoped = $derived(siteScope !== '');
 
   // When scoped (embedded in SiteDetail), search and context filters are
@@ -41,35 +35,40 @@
   // search and vice versa. The unscoped instance keeps using the global
   // stores so user choices persist between visits.
   let localCtx = $state<'' | 'fpm' | 'cli'>('');
-  const effectiveCtx = $derived(scoped ? localCtx : $filterCtx);
+  const effectiveCtx = $derived(pinned ? '' : scoped ? localCtx : $filterCtx);
   // Scoped lenses share one search (debugSearch) so it carries between the site's
   // Debug tabs; the unscoped System view keeps its own global filterText.
-  const effectiveText = $derived(scoped ? $debugSearch : $filterText);
+  const effectiveText = $derived(pinned || $scope.rid || $scope.route ? '' : scoped ? $debugSearch : $filterText);
+  const site = $derived(scoped ? siteScope : $filterSite);
 
-  const groups = $derived(
-    buildDumpGroups($debugEvents, scoped ? siteScope : $filterSite, effectiveCtx, effectiveText, scoped)
-  );
-
-  // Only the newest LENS_PAGE rows render; the rest arrive as the user
-  // reaches the end. Changing a filter starts the window over.
-  let limit = $state(LENS_PAGE);
-  const win = $derived(windowGroups(groups, (g) => g.events, limit));
-  const filterKey = $derived(`${scoped ? siteScope : $filterSite}|${effectiveCtx}|${effectiveText}`);
+  // lerd-ui groups the dumps by request and pages them; the tab holds one page.
+  const lens = createLens();
+  onDestroy(() => lens.destroy());
   $effect(() => {
-    filterKey;
-    limit = LENS_PAGE;
+    lens.set({ kind: 'dump', site, ctx: effectiveCtx, rid: $scope.rid, route: $scope.route, q: effectiveText, tests: $showTests });
+  });
+  const lensGroups = lens.groups;
+  // A dump that arrives while the tab is open flashes; the first page does not.
+  let newestId: string | null = null;
+  $effect(() => {
+    const top = $lensGroups[0]?.rows[0]?.event.id ?? '';
+    if (newestId !== null && top && top !== newestId) flashDump(top);
+    if (top) newestId = top;
+  });
+  let sites = $state<string[]>([]);
+  $effect(() => {
+    void $lensGroups;
+    if (!scoped) fetchFacets({ tests: $showTests }).then((f) => (sites = f.sites), () => {});
   });
 
   let textInput = $state('');
+  // Across every site there is no request timeline, so a clicked id becomes this
+  // lens's search; inside a site the Debug tab takes the click instead.
+  if (!untrack(() => siteScope)) providePickRequest((id) => (textInput = id));
 
   onMount(() => {
-    startDumpsStream();
     void refreshStatus();
     if (scoped) textInput = get(debugSearch);
-  });
-
-  onDestroy(() => {
-    stopDumpsStream();
   });
 
   let textTimer: ReturnType<typeof setTimeout> | null = null;
@@ -87,6 +86,7 @@
 
   async function onClear() {
     await clearDumps();
+    await lens.refresh();
   }
 
   let enabling = $state(false);
@@ -103,18 +103,15 @@
 </script>
 
 <div class="flex flex-col h-full overflow-hidden">
+  {#if !pinned}
   <div class="flex items-center gap-2 px-3 py-3 border-b border-gray-200 dark:border-lerd-border flex-wrap">
-    <input
-      class="text-xs px-2 py-1 rounded-sm border border-gray-300 dark:border-lerd-border bg-white dark:bg-lerd-card flex-1 min-w-[140px]"
-      placeholder={m.dumps_searchPlaceholder()}
-      bind:value={textInput}
-    />
+    <LensSearch bind:value={textInput} placeholder={m.dumps_searchPlaceholder()} />
     {#if !scoped}
       <Dropdown
         value={$filterSite}
         options={[
           { value: '', label: m.dumps_filter_allSites() },
-          ...$knownSites.map((s) => ({ value: s, label: s || m.dumps_unknownSite() }))
+          ...sites.map((s) => ({ value: s, label: s || m.dumps_unknownSite() }))
         ]}
         onchange={(v) => filterSite.set(v)}
       />
@@ -149,13 +146,14 @@
       {m.common_clear()}
     </button>
   </div>
+  {/if}
 
-  <div class="flex-1 overflow-y-auto px-3 pb-3">
-    {#if groups.length === 0}
+  <LensList {lens}>
+    {#snippet empty()}
       {#if !$status?.enabled}
         <div class="px-3 py-10 text-center space-y-3">
           <p class="text-sm text-gray-500 dark:text-gray-400">{m.dumps_disabled_title()}</p>
-          <p class="text-[11px] text-gray-400 dark:text-gray-500">
+          <p class="text-[11px] text-gray-500 dark:text-gray-400">
             {m.dumps_disabled_body()}
           </p>
           <button
@@ -174,19 +172,17 @@
           {/snippet}
         </EmptyState>
       {/if}
-    {:else}
-      {#each win.pages as page (page.group.key)}
-        <section class="mb-4">
-          <header class="flex items-center gap-2 mb-1 sticky top-0 bg-gray-50 dark:bg-lerd-bg py-1 -mx-3 px-3 z-1">
-            <LensGroupLabel label={page.group.label} />
-            <span class="text-xs text-gray-400 ml-auto">{m.dumps_groupCount({ count: page.total })}</span>
-          </header>
-          {#each page.rows as ev (ev.id)}
-            <DumpEntry event={ev} />
-          {/each}
-        </section>
-      {/each}
-      <LensLoadMore shown={win.shown} total={win.total} onmore={() => (limit += LENS_PAGE)} />
-    {/if}
-  </div>
+    {/snippet}
+    {#snippet group(g)}
+      <section class="mb-4">
+        <header class="flex items-center gap-2 mb-1 sticky top-0 bg-gray-50 dark:bg-lerd-bg py-1 -mx-3 px-3 z-1">
+          {#if !pinned}<LensGroupLabel label={groupLabel(g.rows[0].event, scoped)} />{/if}
+          <span class="text-xs text-gray-400 ml-auto">{m.dumps_groupCount({ count: g.count })}</span>
+        </header>
+        {#each g.rows as row (row.event.id)}
+          <DumpEntry event={row.event} />
+        {/each}
+      </section>
+    {/snippet}
+  </LensList>
 </div>

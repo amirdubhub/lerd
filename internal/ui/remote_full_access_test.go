@@ -224,6 +224,15 @@ func TestIsLoopbackOnlyPath(t *testing.T) {
 		{"/api/sites/myapp.test/env/backups/.env.bkp.20260528-103045", true},
 		{"/api/sites/myapp.test/env/restore", true},
 		{"/api/sites/myapp.test/terminal/anything", true},
+		// Switching branch runs composer, npm and migrations and can restore a
+		// database snapshot; pull and push act with the host user's git credentials.
+		{"/api/sites/branch-switch", true},
+		{"/api/sites/branch-plan", true},
+		{"/api/sites/pull-plan", true},
+		{"/api/sites/pull", true},
+		{"/api/sites/myapp.test/git:push", true},
+		{"/api/sites/myapp.test/git:fetch", true},
+		{"/api/sites/git-status", false},
 		{"/api/databases", true},
 		{"/api/databases/mysql", true},
 		{"/api/databases/mysql/drop", true},
@@ -231,6 +240,7 @@ func TestIsLoopbackOnlyPath(t *testing.T) {
 		{"/api/databases/postgres/snapshots/nightly", true},
 		{"/api/databases-overview", false},
 		{"/api/tools/composer/update", true},
+		{"/api/settings/mcp", true},
 		{"/api/share-tools", false},
 		{"/api/sites", false},
 		{"/api/sites/myapp.test", false},
@@ -244,6 +254,59 @@ func TestIsLoopbackOnlyPath(t *testing.T) {
 		t.Run(c.path, func(t *testing.T) {
 			if got := isLoopbackOnlyPath(c.path); got != c.want {
 				t.Errorf("isLoopbackOnlyPath(%q) = %v, want %v", c.path, got, c.want)
+			}
+		})
+	}
+}
+
+// Choosing an editor saves a command the host runs later, so even a remote
+// session opted into full access must not reach it.
+func TestEditorRoutesRefuseRemoteEvenWithFullAccess(t *testing.T) {
+	setupConfigDirFullAccess(t, "alice", "s3cret", true)
+	for _, tc := range []struct {
+		method, path string
+		h            http.HandlerFunc
+	}{
+		{http.MethodGet, "/api/editors", handleEditors},
+		{http.MethodPost, "/api/editors", handleEditors},
+		{http.MethodPost, "/api/sites/shop.test/editor:open", handleSiteAction},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			withRemoteControlGate(tc.h).ServeHTTP(rec, remoteRequest(tc.method, tc.path))
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
+// The dashboard hides the editor controls on a remote session, full access or
+// not, since they act on the host's desktop.
+func TestAccessModeReportsLocal(t *testing.T) {
+	setupConfigDirFullAccess(t, "alice", "s3cret", true)
+	for _, tc := range []struct {
+		name string
+		req  *http.Request
+		want bool
+	}{
+		{"remote", remoteRequest(http.MethodGet, "/api/access-mode"), false},
+		{"loopback", httptest.NewRequest(http.MethodGet, "/api/access-mode", nil), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.want {
+				tc.req.RemoteAddr = "127.0.0.1:54321"
+			}
+			rec := httptest.NewRecorder()
+			withRemoteControlGate(http.HandlerFunc(handleAccessMode)).ServeHTTP(rec, tc.req)
+			var body struct {
+				Local bool `json:"local"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Local != tc.want {
+				t.Errorf("local = %v, want %v", body.Local, tc.want)
 			}
 		})
 	}

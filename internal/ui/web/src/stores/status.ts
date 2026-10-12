@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import { apiFetch, apiJson, decodeJSONResult } from '$lib/api';
+import { apiFetch, decodeJSONResult, sharedJson } from '$lib/api';
 import { wsMessage } from '$lib/ws';
 import { version } from './version';
 
@@ -45,7 +45,7 @@ export interface StatusResponse {
   // Identifier of the lerd-ui process that answered. A change means the server
   // restarted, so the page is reloaded onto the assets it now serves.
   instance?: string;
-  // Managed host binaries (composer, fnm, mkcert) against their pinned versions.
+  // Managed host binaries (composer, mise, fnm, mkcert) against their pinned versions.
   tools?: ToolStatus[];
 }
 
@@ -82,7 +82,7 @@ export const statusLoaded = writable<boolean>(false);
 
 export async function loadStatus() {
   try {
-    applyStatus(await apiJson<StatusResponse>('/api/status'));
+    applyStatus(await sharedJson<StatusResponse>('/api/status'));
   } catch {
     /* keep previous */
   }

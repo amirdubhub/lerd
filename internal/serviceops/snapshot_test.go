@@ -253,12 +253,12 @@ func TestSnapshotDumpCommand(t *testing.T) {
 		{
 			"mysql one database",
 			SnapshotTarget{Service: "mysql", Database: "myapp"},
-			`if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi; ( $(command -v mysqldump || command -v mariadb-dump) -h 127.0.0.1 -uroot --single-transaction --quick --no-tablespaces --routines --triggers --events myapp ) | gzip -c`,
+			`if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi; ( $(command -v mysqldump || command -v mariadb-dump) -h 127.0.0.1 -uroot --single-transaction --quick --no-tablespaces --routines --triggers --events --set-gtid-purged=OFF myapp ) | gzip -c`,
 		},
 		{
 			"mysql all databases",
 			SnapshotTarget{Service: "mysql", AllDatabases: true},
-			`if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi; ( $(command -v mysqldump || command -v mariadb-dump) -h 127.0.0.1 -uroot --single-transaction --quick --no-tablespaces --routines --triggers --events --add-drop-database --all-databases ) | gzip -c`,
+			`if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi; ( dbs=$($(command -v mysql || command -v mariadb) -h 127.0.0.1 -uroot -N -e "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('mysql','information_schema','performance_schema','sys')") || exit 1; [ -n "$dbs" ] || exit 0; $(command -v mysqldump || command -v mariadb-dump) -h 127.0.0.1 -uroot --single-transaction --quick --no-tablespaces --routines --triggers --events --add-drop-database --set-gtid-purged=OFF --databases $dbs ) | gzip -c`,
 		},
 		{
 			"postgres one database",
@@ -299,12 +299,12 @@ func TestSnapshotRestoreCommand(t *testing.T) {
 		{
 			"mysql one database",
 			SnapshotTarget{Service: "mysql", Database: "myapp"},
-			`gunzip -c | ( $(command -v mysql || command -v mariadb) -h 127.0.0.1 --max-allowed-packet=1G -uroot myapp )`,
+			`gunzip -c | ( sed -e '/^SET @@GLOBAL.GTID_PURGED/{' -e ':a' -e '/;[[:space:]]*$/!{' -e 'N' -e 'ba' -e '}' -e 'd' -e '}' | $(command -v mysql || command -v mariadb) -h 127.0.0.1 --max-allowed-packet=1G -uroot myapp )`,
 		},
 		{
 			"mysql all databases",
 			SnapshotTarget{Service: "mysql", AllDatabases: true},
-			`gunzip -c | ( $(command -v mysql || command -v mariadb) -h 127.0.0.1 --max-allowed-packet=1G -uroot )`,
+			"gunzip -c | ( sed -e '/^SET @@GLOBAL.GTID_PURGED/{' -e ':a' -e '/;[[:space:]]*$/!{' -e 'N' -e 'ba' -e '}' -e 'd' -e '}' -e '/^-- Current Database: `mysql`/,/^-- Current Database: /{' -e '/^-- Current Database: `mysql`/d' -e '/^-- Current Database: /!d' -e '}' | $(command -v mysql || command -v mariadb) -h 127.0.0.1 --max-allowed-packet=1G -uroot )",
 		},
 		{
 			"postgres one database",

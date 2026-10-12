@@ -27,12 +27,12 @@
   const groups = $derived(groupByCategory($discoverablePresets));
 </script>
 
-<div class="flex-1 overflow-y-auto">
+<div class="flex-1 flex flex-col min-h-0">
   <DashboardHeader title={m.services_dash_overview()} stats={$servicesLoaded && total > 0 ? summary : undefined} />
 
-  <div class="p-4 space-y-6">
+  <div class="flex-1 min-h-0 overflow-y-auto p-4 space-y-6">
     <section class="space-y-2.5">
-      <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">{m.services_dash_installed()}</h2>
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">{m.services_dash_installed()}</h2>
       {#if $servicesLoaded && total === 0}
         <p class="text-sm text-gray-500 dark:text-gray-400">{m.services_dash_noInstalled()}</p>
       {:else}
@@ -47,7 +47,7 @@
     {#if $accessMode.localControl}
       <section class="space-y-3">
         <div class="flex items-center justify-between gap-3">
-          <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">{m.services_dash_discover()}</h2>
+          <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">{m.services_dash_discover()}</h2>
           <button
             onclick={openPresetModal}
             class="inline-flex items-center gap-1 text-xs font-medium text-lerd-red hover:text-lerd-redhov"

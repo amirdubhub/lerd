@@ -8,6 +8,30 @@ function action(over: Partial<ButtonMenuAction> = {}): ButtonMenuAction {
 }
 
 describe('ButtonMenu', () => {
+  // The divider tone went on every side of the caret, so it wore a lighter
+  // outline than the button it is joined to.
+  it('tints only the divider on the caret, not its whole outline', () => {
+    const { container } = render(Harness, {
+      props: { actions: [action({ id: 'a', label: 'Open' }), action({ id: 'b', label: 'Other' })] }
+    });
+    const caret = container.querySelector('button.rounded-r-lg')!;
+    expect(caret.className).toContain('dark:border-l-white/10');
+    expect(caret.className).not.toMatch(/(^|\s)dark:border-white\/10/);
+  });
+
+  // The same on an icon button kept in the group, like a service's pin.
+  it('tints only the divider on an inline button, not its whole outline', () => {
+    render(Harness, {
+      props: {
+        actions: [action({ id: 'a', label: 'Open' }), action({ id: 'b', label: 'Other' })],
+        inline: action({ id: 'pin', label: 'Pin' })
+      }
+    });
+    const pin = screen.getByTestId('button-menu-inline-pin');
+    expect(pin.className).toContain('dark:border-l-white/10');
+    expect(pin.className).not.toMatch(/(^|\s)dark:border-white\/10/);
+  });
+
   it('renders nothing when actions is empty', () => {
     const { container } = render(Harness, { props: { actions: [] } });
     expect(container.querySelector('button')).toBeNull();

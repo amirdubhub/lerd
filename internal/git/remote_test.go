@@ -1,0 +1,341 @@
+package git
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// pullFixture returns a checkout tracking a bare remote, plus a second clone
+// that can push to that remote behind the checkout's back.
+func pullFixture(t *testing.T) (dir, other string) {
+	t.Helper()
+	remote, dir, other := t.TempDir(), t.TempDir(), t.TempDir()
+	gitRun(t, remote, "init", "-q", "--bare")
+	gitRun(t, dir, "init", "-q")
+	write(t, filepath.Join(dir, "a"), "base")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-q", "-m", "base")
+	gitRun(t, dir, "remote", "add", "origin", remote)
+	gitRun(t, dir, "push", "-q", "-u", "origin", "main")
+	gitRun(t, other, "clone", "-q", remote, ".")
+	return dir, other
+}
+
+func head(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := Output(dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(out)
+}
+
+func TestFastForward(t *testing.T) {
+	dir, other := pullFixture(t)
+	write(t, filepath.Join(other, "a"), "theirs")
+	gitRun(t, other, "commit", "-q", "-am", "theirs")
+	gitRun(t, other, "push", "-q")
+	gitRun(t, dir, "fetch", "-q")
+
+	if _, err := FastForward(dir, head(t, other)); err != nil {
+		t.Fatalf("FastForward: %v", err)
+	}
+	if head(t, dir) != head(t, other) {
+		t.Fatal("checkout did not reach the remote's commit")
+	}
+}
+
+// It stops at the commit it is given, even when the remote has moved on since.
+func TestFastForward_stopsAtTheGivenCommit(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, other, "commit", "-q", "--allow-empty", "-m", "reviewed")
+	reviewed := head(t, other)
+	gitRun(t, other, "commit", "-q", "--allow-empty", "-m", "later")
+	gitRun(t, other, "push", "-q")
+	gitRun(t, dir, "fetch", "-q")
+
+	if _, err := FastForward(dir, reviewed); err != nil {
+		t.Fatalf("FastForward: %v", err)
+	}
+	if head(t, dir) != reviewed {
+		t.Fatal("checkout went past the reviewed commit")
+	}
+}
+
+// A diverged branch needs a merge or rebase, which is the user's call, not ours.
+func TestFastForward_refusesDivergedBranch(t *testing.T) {
+	dir, other := pullFixture(t)
+	write(t, filepath.Join(other, "a"), "theirs")
+	gitRun(t, other, "commit", "-q", "-am", "theirs")
+	gitRun(t, other, "push", "-q")
+	write(t, filepath.Join(dir, "b"), "ours")
+	gitRun(t, dir, "add", "b")
+	gitRun(t, dir, "commit", "-q", "-m", "ours")
+	gitRun(t, dir, "fetch", "-q")
+	before := head(t, dir)
+
+	_, err := FastForward(dir, head(t, other))
+	if err == nil {
+		t.Fatal("want refusal on a diverged branch")
+	}
+	if head(t, dir) != before {
+		t.Error("diverged checkout was moved")
+	}
+	if st, _ := ReadStatus(dir); st.Conflicted != 0 {
+		t.Error("pull left conflicts behind")
+	}
+	if strings.Contains(err.Error(), "hint:") || !strings.Contains(err.Error(), "fast-forward") {
+		t.Errorf("want only git's reason, got %q", err)
+	}
+}
+
+func TestFetch_updatesBehindCount(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, other, "commit", "-q", "--allow-empty", "-m", "theirs")
+	gitRun(t, other, "push", "-q")
+
+	if _, err := Fetch(dir); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if st, _ := ReadStatus(dir); st.Behind != 1 {
+		t.Fatalf("want behind 1 after fetch, got %+v", st)
+	}
+}
+
+func TestPush_sendsLocalCommits(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "ours")
+
+	if _, err := Push(dir); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	gitRun(t, other, "pull", "-q")
+	if head(t, other) != head(t, dir) {
+		t.Fatal("remote did not receive the commit")
+	}
+}
+
+// Push is never forced: when the remote moved on, someone else's work wins.
+func TestPush_refusesWhenRemoteMoved(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, other, "commit", "-q", "--allow-empty", "-m", "theirs")
+	gitRun(t, other, "push", "-q")
+	theirs := head(t, other)
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "ours")
+
+	if _, err := Push(dir); err == nil {
+		t.Fatal("want rejection when the remote moved on")
+	}
+	gitRun(t, other, "pull", "-q")
+	if head(t, other) != theirs {
+		t.Error("remote branch was overwritten")
+	}
+}
+
+func branchOf(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := Output(dir, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(out)
+}
+
+func TestSwitch_localBranch(t *testing.T) {
+	dir, _ := pullFixture(t)
+	gitRun(t, dir, "branch", "dev")
+
+	if _, err := Switch(dir, "dev"); err != nil {
+		t.Fatalf("Switch: %v", err)
+	}
+	if got := branchOf(t, dir); got != "dev" {
+		t.Fatalf("on %q, want dev", got)
+	}
+}
+
+// A branch only on the remote is checked out as a local branch tracking it.
+func TestSwitch_remoteOnlyBranch(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, other, "push", "-q", "origin", "main:release")
+	gitRun(t, dir, "fetch", "-q")
+
+	if _, err := Switch(dir, "origin/release"); err != nil {
+		t.Fatalf("Switch: %v", err)
+	}
+	if got := branchOf(t, dir); got != "release" {
+		t.Fatalf("on %q, want release", got)
+	}
+	if st, _ := ReadStatus(dir); !st.Upstream {
+		t.Error("new local branch does not track the remote one")
+	}
+}
+
+// Uncommitted work the other branch would overwrite stays put; git refuses.
+func TestSwitch_refusesToLoseLocalChanges(t *testing.T) {
+	dir, _ := pullFixture(t)
+	gitRun(t, dir, "checkout", "-q", "-b", "dev")
+	write(t, filepath.Join(dir, "a"), "dev")
+	gitRun(t, dir, "commit", "-q", "-am", "dev")
+	gitRun(t, dir, "checkout", "-q", "main")
+	write(t, filepath.Join(dir, "a"), "unsaved")
+
+	if _, err := Switch(dir, "dev"); err == nil {
+		t.Fatal("want refusal")
+	}
+	if got := branchOf(t, dir); got != "main" {
+		t.Errorf("moved to %q", got)
+	}
+}
+
+// A new branch starts at its base but tracks nothing: pushing it must not
+// land on the base's upstream.
+func TestSwitchNew(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, other, "push", "-q", "origin", "main:release")
+	gitRun(t, dir, "fetch", "-q")
+
+	if _, err := SwitchNew(dir, "feature/x", "origin/release"); err != nil {
+		t.Fatalf("SwitchNew: %v", err)
+	}
+	if got := branchOf(t, dir); got != "feature/x" {
+		t.Fatalf("on %q, want feature/x", got)
+	}
+	if st, _ := ReadStatus(dir); st.Upstream {
+		t.Error("new branch tracks its base")
+	}
+	if _, err := SwitchNew(dir, "feature/x", ""); err == nil {
+		t.Error("want a refusal for a branch that already exists")
+	}
+}
+
+func TestSwitchNew_fromCurrentBranch(t *testing.T) {
+	dir, _ := pullFixture(t)
+	before := head(t, dir)
+	if _, err := SwitchNew(dir, "spike", ""); err != nil {
+		t.Fatalf("SwitchNew: %v", err)
+	}
+	if branchOf(t, dir) != "spike" || head(t, dir) != before {
+		t.Fatal("want spike at the commit main was on")
+	}
+}
+
+// A matching push default would send every branch; Push sends only this one.
+func TestPush_sendsOnlyTheCurrentBranch(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, dir, "config", "push.default", "matching")
+	gitRun(t, dir, "push", "-q", "origin", "main:side")
+	gitRun(t, dir, "branch", "side", "origin/side")
+	gitRun(t, dir, "checkout", "-q", "side")
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "side work")
+	gitRun(t, dir, "checkout", "-q", "main")
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "main work")
+
+	if _, err := Push(dir); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	gitRun(t, other, "fetch", "-q")
+	if out, _ := Output(other, "log", "-1", "--format=%s", "origin/side"); strings.TrimSpace(out) == "side work" {
+		t.Error("push sent another branch")
+	}
+	if out, _ := Output(other, "log", "-1", "--format=%s", "origin/main"); strings.TrimSpace(out) != "main work" {
+		t.Error("push did not send the current branch")
+	}
+}
+
+// A forcing push refspec in the config must not turn Push into a force push.
+func TestPush_ignoresAForcingRefspec(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, dir, "config", "remote.origin.push", "+refs/heads/*:refs/heads/*")
+	gitRun(t, other, "commit", "-q", "--allow-empty", "-m", "theirs")
+	gitRun(t, other, "push", "-q")
+	theirs := head(t, other)
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "ours")
+
+	if _, err := Push(dir); err == nil {
+		t.Fatal("want a rejection, not a forced overwrite")
+	}
+	gitRun(t, other, "pull", "-q")
+	if head(t, other) != theirs {
+		t.Error("remote branch was overwritten")
+	}
+}
+
+// A branch with no upstream is published to origin under its own name and
+// tracks it from then on, so the next push is an ordinary one.
+func TestPush_publishesABranchWithNoUpstream(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, dir, "switch", "-q", "--no-track", "-c", "feature/x")
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "x")
+
+	if _, err := Push(dir); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	gitRun(t, other, "fetch", "-q")
+	if out, _ := Output(other, "rev-parse", "origin/feature/x"); strings.TrimSpace(out) != head(t, dir) {
+		t.Fatal("origin did not receive the branch")
+	}
+	if st, _ := ReadStatus(dir); !st.Upstream || st.Publishable {
+		t.Fatalf("want the branch tracking origin/feature/x, got %+v", st)
+	}
+}
+
+// Publishing never overwrites a same-named branch someone else pushed.
+func TestPush_publishRefusesToOverwrite(t *testing.T) {
+	dir, other := pullFixture(t)
+	gitRun(t, other, "switch", "-q", "-c", "feature/x")
+	gitRun(t, other, "commit", "-q", "--allow-empty", "-m", "theirs")
+	gitRun(t, other, "push", "-q", "origin", "feature/x")
+	theirs := head(t, other)
+	gitRun(t, dir, "switch", "-q", "--no-track", "-c", "feature/x")
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "ours")
+
+	if _, err := Push(dir); err == nil {
+		t.Fatal("want a rejection, not a forced overwrite")
+	}
+	gitRun(t, other, "fetch", "-q")
+	if out, _ := Output(other, "rev-parse", "origin/feature/x"); strings.TrimSpace(out) != theirs {
+		t.Error("remote branch was overwritten")
+	}
+}
+
+func TestPush_noOriginToPublishTo(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q")
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "x")
+
+	if _, err := Push(dir); err == nil || !strings.Contains(err.Error(), "no upstream") {
+		t.Fatalf("want a no-upstream refusal, got %v", err)
+	}
+}
+
+func TestReadStatus_publishable(t *testing.T) {
+	dir, _ := pullFixture(t)
+	if st, _ := ReadStatus(dir); st.Publishable {
+		t.Error("a tracking branch is not publishable")
+	}
+	gitRun(t, dir, "switch", "-q", "--no-track", "-c", "spike")
+	if st, _ := ReadStatus(dir); !st.Publishable {
+		t.Error("a branch with no upstream and an origin is publishable")
+	}
+	gitRun(t, dir, "switch", "-q", "--detach")
+	if st, _ := ReadStatus(dir); st.Publishable {
+		t.Error("a detached HEAD is not publishable")
+	}
+	gitRun(t, dir, "switch", "-q", "spike")
+	gitRun(t, dir, "remote", "rename", "origin", "upstream")
+	if st, _ := ReadStatus(dir); st.Publishable {
+		t.Error("without an origin there is nowhere to publish")
+	}
+}
+
+// Before the first commit the branch does not exist yet, so there is nothing to publish.
+func TestReadStatus_notPublishableBeforeFirstCommit(t *testing.T) {
+	remote, dir := t.TempDir(), t.TempDir()
+	gitRun(t, remote, "init", "-q", "--bare")
+	gitRun(t, dir, "init", "-q")
+	gitRun(t, dir, "remote", "add", "origin", remote)
+	if st, _ := ReadStatus(dir); st.Publishable {
+		t.Error("a branch with no commits is not publishable")
+	}
+}

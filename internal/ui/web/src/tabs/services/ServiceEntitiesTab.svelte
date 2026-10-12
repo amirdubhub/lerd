@@ -13,6 +13,7 @@
     type EntityKind
   } from '$stores/entities';
   import type { Service } from '$stores/services';
+  import { keepServiceAwake } from '$stores/dashboard';
   import EntityCard from './EntityCard.svelte';
   import { m } from '../../paraglide/messages.js';
 
@@ -24,12 +25,20 @@
   // Reload whenever the selected service changes so switching between two
   // services doesn't show the previous one's contents.
   $effect(() => {
+    if (!up) return;
     void loadEntities(svc.name);
   });
 
+  // Looking at what a service holds counts as using it: a sleeping one wakes,
+  // and it stays up while the tab is open.
+  $effect(() => keepServiceAwake(svc.name));
+
   const loaded = $derived($entities[svc.name]);
   const kinds = $derived(loaded ?? []);
-  const stopped = $derived(svc.status !== 'active');
+  // A woken engine's unit is up before it takes connections; idle-suspend
+  // clears its flag only once it is ready, so wait for that too.
+  const up = $derived(svc.status === 'active' && !svc.idle_suspended);
+  const stopped = $derived(!up && !svc.idle_suspended);
   const load = $derived($entityLoads[svc.name]);
   const failed = $derived(!loaded && Boolean(load?.failed));
 
@@ -58,7 +67,9 @@
 
 <div class="p-3 sm:p-5 space-y-5 overflow-y-auto">
   {#if stopped}
-    <p class="text-sm text-gray-400 dark:text-gray-500">{m.entities_startHint()}</p>
+    <p class="text-sm text-gray-500 dark:text-gray-400">{m.entities_startHint()}</p>
+  {:else if !up}
+    <LoadingRow />
   {:else if failed}
     <LoadFailedRow
       message={m.entities_loadFailed()}
@@ -68,7 +79,7 @@
   {:else if !loaded}
     <LoadingRow />
   {:else if kinds.length === 0}
-    <p class="text-sm text-gray-400 dark:text-gray-500">{m.entities_empty()}</p>
+    <p class="text-sm text-gray-500 dark:text-gray-400">{m.entities_empty()}</p>
   {:else}
     {#each kinds as kind (kind.kind)}
       <div class="space-y-4">
@@ -103,7 +114,7 @@
         {#if kind.error}
           <p class="text-xs text-red-500">{kind.error}</p>
         {:else if kind.rows.length === 0}
-          <p class="text-sm text-gray-400 dark:text-gray-500">{m.entities_empty()}</p>
+          <p class="text-sm text-gray-500 dark:text-gray-400">{m.entities_empty()}</p>
         {:else}
           <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {#each kind.rows as row (row.name)}

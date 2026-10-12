@@ -58,6 +58,106 @@ describe('SiteDoctorModal', () => {
     expect(screen.getByRole('button', { name: 'Fix' })).toBeTruthy();
   });
 
+  it('copies a prompt for an agent naming the checks that did not pass', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.assign(navigator, { clipboard: { writeText } });
+    loadDoctor.mockResolvedValue({
+      checks: [
+        { name: 'app_key', status: 'fail' },
+        { name: 'app_debug', status: 'warn' },
+        { name: 'migrations', status: 'ok' }
+      ],
+      failures: 1,
+      warnings: 1
+    });
+    loadCommands.mockResolvedValue([]);
+    render(SiteDoctorModal, { props: { open: true, site: site(), branch: '', onclose: () => {} } });
+
+    (await screen.findByText('Copy for agent')).click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
+    const prompt = writeText.mock.calls[0][0];
+    expect(prompt).toContain('app_key, app_debug');
+    expect(prompt).not.toContain('migrations');
+    expect(prompt).toContain('site "acme.test"');
+  });
+
+  it('targets a worktree by its path, since site_doctor reads the checkout it is pointed at', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.assign(navigator, { clipboard: { writeText } });
+    loadDoctor.mockResolvedValue({ checks: [{ name: 'app_key', status: 'fail' }], failures: 1, warnings: 0 });
+    loadCommands.mockResolvedValue([]);
+    const s = site({ worktrees: [{ branch: 'feat-x', domain: 'feat-x.acme.test', path: '/code/acme-feat-x' }] });
+    render(SiteDoctorModal, { props: { open: true, site: s, branch: 'feat-x', onclose: () => {} } });
+
+    (await screen.findByText('Copy for agent')).click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0][0]).toContain('path "/code/acme-feat-x"');
+  });
+
+  it('offers no agent prompt when every check passed', async () => {
+    loadDoctor.mockResolvedValue({ checks: [{ name: 'app_key', status: 'ok' }], failures: 0, warnings: 0 });
+    loadCommands.mockResolvedValue([]);
+    render(SiteDoctorModal, { props: { open: true, site: site(), branch: '', onclose: () => {} } });
+    expect(await screen.findByText('All checks passed')).toBeTruthy();
+    expect(screen.queryByText('Copy for agent')).toBeNull();
+  });
+
+  // The slow container execs must not hold back the findings that are already in.
+  it('shows each check as it streams in while the rest are still running', async () => {
+    loadDoctor.mockImplementation((_d: string, _b: string, onCheck: (c: unknown) => void) => {
+      onCheck({ name: 'app_key', status: 'fail', detail: 'APP_KEY is empty' });
+      return new Promise(() => {});
+    });
+    loadCommands.mockResolvedValue([]);
+
+    render(SiteDoctorModal, { props: { open: true, site: site(), branch: '', onclose: () => {} } });
+
+    expect(await screen.findByText('APP_KEY is empty')).toBeTruthy();
+    expect(screen.getByTestId('doctor-pending')).toBeTruthy();
+    expect(screen.queryByText('All checks passed')).toBeNull();
+  });
+
+  // Reopening mid-run starts a fresh run; the abandoned one finishing later
+  // must not write its findings or its verdict into the new report.
+  it('ignores a run left behind by closing and reopening the modal', async () => {
+    let oldCheck: (c: unknown) => void = () => {};
+    let finishOld: (r: unknown) => void = () => {};
+    loadDoctor
+      .mockImplementationOnce((_d: string, _b: string, onCheck: (c: unknown) => void) => {
+        oldCheck = onCheck;
+        return new Promise((res) => (finishOld = res));
+      })
+      .mockImplementationOnce(() => new Promise(() => {}));
+    loadCommands.mockResolvedValue([]);
+
+    const props = { open: true, site: site(), branch: '', onclose: () => {} };
+    const { rerender } = render(SiteDoctorModal, { props });
+    await rerender({ ...props, open: false });
+    await rerender({ ...props, open: true });
+    expect(loadDoctor).toHaveBeenCalledTimes(2);
+
+    oldCheck({ name: 'app_key', status: 'fail', detail: 'stale finding' });
+    finishOld({ checks: [], failures: 0, warnings: 0 });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByText('stale finding')).toBeNull();
+    expect(screen.queryByText('All checks passed')).toBeNull();
+  });
+
+  // A fix changes what the checks still in flight are reading, so it waits.
+  it('keeps Fix disabled until every check is in', async () => {
+    loadDoctor.mockImplementation((_d: string, _b: string, onCheck: (c: unknown) => void) => {
+      onCheck({ name: 'composer_deps', status: 'fail', fix: 'composer_install' });
+      return new Promise(() => {});
+    });
+    loadCommands.mockResolvedValue([]);
+
+    render(SiteDoctorModal, { props: { open: true, site: site(), branch: '', onclose: () => {} } });
+
+    const fix = (await screen.findByRole('button', { name: 'Fix' })) as HTMLButtonElement;
+    expect(fix.disabled).toBe(true);
+  });
+
   // A fix naming a destructive command (migrate:fresh drops every table) must
   // still go through the confirm gate, so Fix launches rather than executing.
   it('launches the fix command so a confirm: true fix still prompts', async () => {

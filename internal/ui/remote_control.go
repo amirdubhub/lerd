@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"runtime"
 	"strings"
 	"time"
 
 	lerdcli "github.com/geodro/lerd/internal/cli"
 	"github.com/geodro/lerd/internal/config"
 	"github.com/geodro/lerd/internal/nginx"
+	"github.com/geodro/lerd/internal/platform"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -31,6 +31,11 @@ var loopbackOnlyRoutes = []string{
 	"/api/logs/terminal",        // spawns a terminal emulator on the host
 	"/api/browse",               // browses host filesystem
 	"/api/push/test",            // fires notifications onto subscribed devices
+	"/api/settings/mcp",         // writes AI assistants' config under the host user's home
+	"/api/sites/branch-switch",  // runs composer, npm and migrations; restores database snapshots
+	"/api/sites/branch-plan",    // reads the site's database and its snapshots
+	"/api/sites/pull",           // pulls with the host user's git credentials, then runs composer, npm and migrations
+	"/api/sites/pull-plan",      // fetches with the host user's git credentials
 }
 
 // loopbackOnlyRoutePrefixes are endpoint subtrees restricted in full, so a
@@ -55,8 +60,10 @@ var loopbackOnlyRoutePrefixes = []string{
 // new subresource cannot accidentally escape the gate by failing to be
 // re-listed here.
 var loopbackOnlySiteSubactions = []string{
-	"/terminal", // opens an interactive shell on the host
-	"/env",      // raw .env content + backups + restore (APP_KEY, DB creds, tokens)
+	"/terminal",  // opens an interactive shell on the host
+	"/env",       // raw .env content + backups + restore (APP_KEY, DB creds, tokens)
+	"/git:fetch", // both talk to the remote with the host user's git credentials
+	"/git:push",
 }
 
 // isLoopbackOnlyPath reports whether the given URL path is in either the
@@ -359,6 +366,7 @@ func handleAccessMode(w http.ResponseWriter, r *http.Request) {
 	lanExposed := cfg != nil && cfg.LAN.Exposed
 	writeJSON(w, map[string]any{
 		"local_control": hasHostActionAuthority(r),
+		"local":         isLocalControlRequest(r),
 		"lan_exposed":   lanExposed,
 	})
 }
@@ -392,7 +400,7 @@ func handleLANStatus(w http.ResponseWriter, r *http.Request) {
 			"services_enabled":   servicesEnabled,
 			"services_reachable": exposed && servicesEnabled,
 			"lan_ip":             lanIP,
-			"macos":              runtime.GOOS == "darwin",
+			"macos":              platform.Current.UsesMachineVM,
 		})
 		return
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"sort"
@@ -69,9 +70,7 @@ func PauseSite(name string) error {
 
 	running := collectRunningWorkers(site)
 
-	for _, w := range running {
-		stopWorkerByName(site, w)
-	}
+	stopWorkersByName(site, running)
 
 	// Stop the custom container when pausing a custom container site.
 	if site.IsCustomContainer() {
@@ -149,19 +148,7 @@ func setSiteContainerAutostart(site *config.Site, on bool) bool {
 	if unit == "" {
 		return false
 	}
-	path := filepath.Join(config.QuadletDir(), unit+".container")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	out := podman.StripInstallSection(string(raw), true)
-	if on && lerdSystemd.IsAutostartEnabled() {
-		out = strings.TrimRight(out, "\n") + "\n\n" + quadletInstallBlock
-	}
-	if out == string(raw) {
-		return false
-	}
-	return os.WriteFile(path, []byte(out), 0644) == nil
+	return podman.SetQuadletAutostart(unit, on)
 }
 
 // hostProxyEnvRefresh regenerates a site's .env by re-running `lerd env`. A
@@ -302,9 +289,7 @@ func UnpauseSite(name string) error {
 	refreshHostProxyEnvOnResume(site, resumeMode)
 
 	resumed := site.PausedWorkers
-	for _, w := range resumed {
-		resumeWorkerByName(site, w, phpVersion)
-	}
+	resumeWorkersByName(site, resumed, phpVersion)
 
 	site.Paused = false
 	site.PausedWorkers = nil
@@ -538,47 +523,71 @@ func unitIsActiveOrActivating(unit string) bool {
 	return state == "active" || state == "activating"
 }
 
-// stopWorkerByName stops a single named worker for the site.
-func stopWorkerByName(site *config.Site, workerName string) {
-	if workerName == "stripe" {
-		StripeStopForSite(site.Name) //nolint:errcheck
-		return
+// stopWorkersByName stops the named workers of a site. Each unit is torn down
+// first and one daemon-reload follows for all of them, instead of one each.
+func stopWorkersByName(site *config.Site, workers []string) {
+	removed := false
+	for _, w := range workers {
+		if w != "stripe" {
+			removed = tearDownWorker(site.Name, site.Path, w) || removed
+			continue
+		}
+		if step, err := removeWorkerUnit("lerd-stripe-"+site.Name, "stripe listener"); err == nil {
+			step.OK("")
+			removed = true
+		}
 	}
-	WorkerStopForSite(site.Name, site.Path, workerName) //nolint:errcheck
+	if err := podman.DaemonReloadIfNeeded(removed); err != nil {
+		feedback.Warn("daemon-reload: %v", err)
+	}
 }
 
-// resumeWorkerByName restarts a single named worker for the site. It gates on
-// idleWorkerResumable so the set of workers it can bring back is identical to the
-// set idle-suspend is allowed to stop — keeping the two in lockstep means a
-// worker can never be suspended-but-unresumable (stranded). A new resumable
-// worker kind must be taught to idleWorkerResumable or this gate blocks it.
-func resumeWorkerByName(site *config.Site, workerName, phpVersion string) {
-	if !idleWorkerResumable(site, workerName) {
-		return
-	}
-	if workerName == "stripe" {
-		scheme := "http"
-		if site.Secured {
-			scheme = "https"
+// resumeWorkersByName writes every unit, reloads once, then starts them. It
+// gates on idleWorkerResumable, the set idle-suspend may stop, so a worker can
+// never be suspended but unresumable; a new resumable kind must be taught there.
+func resumeWorkersByName(site *config.Site, workers []string, phpVersion string) {
+	var batch []func() error
+	reload := false
+	for _, name := range workers {
+		if !idleWorkerResumable(site, name) {
+			continue
 		}
-		StripeStartForSite(site.Name, site.Path, scheme+"://"+site.PrimaryDomain()) //nolint:errcheck
-		return
-	}
-	if workerName == hostProxyWorkerName {
-		if proj, _ := config.LoadProjectConfig(site.Path); proj != nil && proj.Proxy != nil {
-			startHostProxyWorker(*site, proj.Proxy)
+		if name == "stripe" {
+			scheme := "http"
+			if site.Secured {
+				scheme = "https"
+			}
+			changed, start, err := prepareStripeStart(site.Name, site.Path, scheme+"://"+site.PrimaryDomain())
+			if err != nil {
+				continue
+			}
+			reload = reload || changed
+			batch = append(batch, start)
+			continue
 		}
-		return
+		var l *workerLaunch
+		if name == hostProxyWorkerName {
+			if proj, _ := config.LoadProjectConfig(site.Path); proj != nil && proj.Proxy != nil {
+				l = prepareHostProxyStart(*site, proj.Proxy)
+			}
+		} else {
+			fw, _ := config.GetFrameworkForDir(site.Framework, site.Path)
+			l, _ = prepareWorkerStart(site.Name, site.Path, phpVersion, name, fw.Workers[name])
+		}
+		if l == nil {
+			continue
+		}
+		reload = reload || l.reload
+		// The dev server comes from the proxy block, not the project's worker list.
+		persist := name != hostProxyWorkerName
+		batch = append(batch, func() error { return launchWorker(l, persist) })
 	}
-	fw, ok := config.GetFrameworkForDir(site.Framework, site.Path)
-	if !ok || fw.Workers == nil {
-		return
+	if err := podman.DaemonReloadIfNeeded(reload); err != nil {
+		feedback.Warn("daemon-reload: %v", err)
 	}
-	worker, ok := fw.Workers[workerName]
-	if !ok {
-		return
+	for _, start := range batch {
+		start() //nolint:errcheck
 	}
-	WorkerStartForSite(site.Name, site.Path, phpVersion, workerName, worker, true) //nolint:errcheck
 }
 
 // pausedPageHTML is the static HTML for the shared paused-site landing page.
@@ -705,17 +714,22 @@ func writePausedHTML(_ *config.Site) error {
 	return os.WriteFile(filepath.Join(dir, "paused.html"), []byte(pausedPageHTML), 0644)
 }
 
-// wakingPageHTML is the static landing page served while an idle-suspended
-// host-proxy site's dev server is starting back up. Unlike the paused page it
-// has no Resume button: the request that loaded it already drove idle-resume, so
-// it just auto-refreshes (native meta refresh) until the proxy vhost is restored
-// and the reload lands on the live app.
-const wakingPageHTML = `<!DOCTYPE html>
+// WakingPage is the landing page served while something idle-suspend put to
+// sleep starts back up: a site (its dev server or its services) or a service
+// dashboard. Unlike the paused page it has no Resume button: the request that
+// loaded it already drove the wake, so it just auto-refreshes (native meta
+// refresh) until the reload lands on the live page. label names what is waking;
+// empty shows the page's own host.
+func WakingPage(label string) string {
+	return strings.Replace(wakingPageHTML, "{{label}}", html.EscapeString(label), 1)
+}
+
+var wakingPageHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="3">
+  <meta http-equiv="refresh" content="1">
   <title>Waking up</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -762,11 +776,11 @@ const wakingPageHTML = `<!DOCTYPE html>
 <body>
   <div class="card">
     <div class="spinner"></div>
-    <h1>Waking the dev server</h1>
-    <p class="host" id="host"></p>
-    <p>This site was idle and is starting back up. This page refreshes automatically.</p>
+    <h1>Waking up</h1>
+    <p class="host" id="host">{{label}}</p>
+    <p>This was idle and is starting back up. This page refreshes automatically.</p>
   </div>
-  <script>document.getElementById('host').textContent = location.hostname;</script>
+  <script>var h = document.getElementById('host'); if (!h.textContent) h.textContent = location.hostname;</script>
 </body>
 </html>
 `
@@ -778,7 +792,7 @@ func writeWakingHTML(_ *config.Site) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "waking.html"), []byte(wakingPageHTML), 0644)
+	return os.WriteFile(filepath.Join(dir, "waking.html"), []byte(WakingPage("")), 0644)
 }
 
 // pauseWorktrees generates paused HTML and nginx vhosts for every worktree of

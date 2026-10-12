@@ -401,6 +401,18 @@ func TestWatchPlaywrightBoot_TimesOut(t *testing.T) {
 	}
 }
 
+// A deadline that passes before the server even starts is still a timeout, as
+// it is on a loaded CI runner where the start itself is slow.
+func TestWatchPlaywrightBoot_TimesOutBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	ok, out := watchPlaywrightBoot(ctx, exec.CommandContext(ctx, "sh", "-c", "sleep 30"))
+	if ok || !strings.Contains(out, "timed out") {
+		t.Errorf("watchPlaywrightBoot = %v, %q, want a timeout message", ok, out)
+	}
+}
+
 func TestIndentBlock_PrefixesEveryLine(t *testing.T) {
 	got := indentBlock("first\nsecond", "  | ")
 	want := "  | first\n  | second"

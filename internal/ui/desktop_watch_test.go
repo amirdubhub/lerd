@@ -34,8 +34,8 @@ func TestWatchDesktopThemeReportsAThemeSwap(t *testing.T) {
 	changed := make(chan struct{}, 4)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := watchDesktopTheme(ctx, current, omarchyNames, 20*time.Millisecond, func() { changed <- struct{}{} }); err != nil {
-		t.Fatalf("watchDesktopTheme: %v", err)
+	if err := watchDir(ctx, current, omarchyNames, 20*time.Millisecond, func() { changed <- struct{}{} }); err != nil {
+		t.Fatalf("watchDir: %v", err)
 	}
 
 	// What omarchy-theme-set does: stage the new theme beside the old one, then
@@ -63,8 +63,8 @@ func TestWatchDesktopThemeReportsANameChange(t *testing.T) {
 	changed := make(chan struct{}, 4)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := watchDesktopTheme(ctx, current, omarchyNames, 20*time.Millisecond, func() { changed <- struct{}{} }); err != nil {
-		t.Fatalf("watchDesktopTheme: %v", err)
+	if err := watchDir(ctx, current, omarchyNames, 20*time.Millisecond, func() { changed <- struct{}{} }); err != nil {
+		t.Fatalf("watchDir: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(current, "theme.name"), []byte("nord\n"), 0644); err != nil {
@@ -85,8 +85,11 @@ func TestWatchDesktopThemeCollapsesABurst(t *testing.T) {
 	changed := make(chan struct{}, 16)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := watchDesktopTheme(ctx, current, omarchyNames, 150*time.Millisecond, func() { changed <- struct{}{} }); err != nil {
-		t.Fatalf("watchDesktopTheme: %v", err)
+	// The settle window outlasts a stall between writes on a loaded CI runner,
+	// and the quiet period after the report outlasts the window.
+	const settle = 500 * time.Millisecond
+	if err := watchDir(ctx, current, omarchyNames, settle, func() { changed <- struct{}{} }); err != nil {
+		t.Fatalf("watchDir: %v", err)
 	}
 
 	for i := 0; i < 5; i++ {
@@ -98,7 +101,7 @@ func TestWatchDesktopThemeCollapsesABurst(t *testing.T) {
 	select {
 	case <-changed:
 		t.Error("a burst of events reported more than one change")
-	case <-time.After(400 * time.Millisecond):
+	case <-time.After(2 * settle):
 	}
 }
 
@@ -107,8 +110,8 @@ func TestWatchDesktopThemeCollapsesABurst(t *testing.T) {
 func TestWatchDesktopThemeWithoutADesktop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := watchDesktopTheme(ctx, filepath.Join(t.TempDir(), "absent"), omarchyNames, time.Millisecond, func() {})
+	err := watchDir(ctx, filepath.Join(t.TempDir(), "absent"), omarchyNames, time.Millisecond, func() {})
 	if err == nil {
-		t.Error("watchDesktopTheme on a missing directory = nil, want an error the caller can ignore")
+		t.Error("watchDir on a missing directory = nil, want an error the caller can ignore")
 	}
 }

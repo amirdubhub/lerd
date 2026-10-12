@@ -129,17 +129,6 @@ func pendingImageWork() []imageWork {
 		img := image
 		reason := "missing, needed by " + strings.TrimPrefix(unit, "lerd-")
 		switch {
-		case img == podman.DNSMasqImage:
-			work = append(work, imageWork{
-				job: BuildJob{
-					Label: "Building dnsmasq",
-					Run: func(w io.Writer) error {
-						return podman.BuildDNSMasqImage(w, dns.ReadUpstreamDNS())
-					},
-				},
-				item: imagepull.Build("dnsmasq image", podman.DNSMasqBaseImage, reason),
-			})
-
 		case strings.HasPrefix(img, "lerd-php") && strings.HasSuffix(img, "-fpm:local"):
 			// Extract version from image name, e.g. lerd-php84-fpm:local → 8.4
 			short := strings.TrimSuffix(strings.TrimPrefix(img, "lerd-php"), "-fpm:local")
@@ -489,6 +478,12 @@ type StartEvent struct {
 // the same SIGTERM a stop is, so lerd-ui asking for its own unit killed the
 // start half way and left the dashboard unreachable behind a 502.
 func startLerd(emit func(StartEvent), skip []string) error {
+	release, err := podman.LockLifecycle()
+	if err != nil {
+		return fmt.Errorf("lifecycle lock: %w", err)
+	}
+	defer release()
+
 	var emitMu sync.Mutex
 	report := func(e StartEvent) {
 		if emit == nil {
@@ -532,6 +527,14 @@ func startLerd(emit func(StartEvent), skip []string) error {
 	// here.
 	containerDNS := dns.ReadContainerDNS()
 	_ = healPodmanUpgrade(containerDNS)
+
+	// A boot where the network came up late leaves pasta's namespace without
+	// a default route, cutting every container off the internet (#2047).
+	if healed, err := podman.HealRoutelessNetns(); err != nil {
+		fmt.Printf("  WARN: rebuilding the container network: %v\n", err)
+	} else if healed {
+		fmt.Println("  Rebuilt the container network, it was set up before the host had a route out")
+	}
 
 	// Ensure the lerd bridge network exists. On macOS the network is stored
 	// inside the Podman Machine VM; it may be absent after a fresh machine
@@ -686,6 +689,7 @@ func startLerd(emit func(StartEvent), skip []string) error {
 	serviceUnits = append(serviceUnits, lifecycle.InstalledCustomContainerUnits()...)
 	serviceUnits = append(serviceUnits, "lerd-ui", "lerd-watcher")
 	serviceUnits = dropSkipped(serviceUnits, skip)
+	serviceUnits = dropIdleSuspendedServiceUnits(serviceUnits)
 
 	// Phase 2: worker units that depend on running containers.
 	workerUnits := append(lifecycle.RegisteredQueueUnits(), lifecycle.RegisteredStripeUnits()...)
@@ -735,7 +739,7 @@ func startLerd(emit func(StartEvent), skip []string) error {
 		return jobs
 	}
 
-	startedServiceUnits := lifecycle.InstalledServiceUnits()
+	startedServiceUnits := dropIdleSuspendedServiceUnits(lifecycle.InstalledServiceUnits())
 	serviceErr := RunParallel(makeJobs(serviceUnits))
 	// When the Podman Machine's container storage is left corrupt after an
 	// unclean host shutdown, every container start fails. Remount storage and
@@ -852,7 +856,7 @@ func startLerd(emit func(StartEvent), skip []string) error {
 // installed but are not yet running. Called from lerd install to bring back services
 // (mysql, redis, etc.) that were restored from .lerd.yaml.
 func startRestoredServices() {
-	units := lifecycle.InstalledServiceUnits()
+	units := dropIdleSuspendedServiceUnits(lifecycle.InstalledServiceUnits())
 	if len(units) == 0 {
 		return
 	}
@@ -950,20 +954,64 @@ func launchTray() error {
 	if err != nil {
 		return err
 	}
-	return exec.Command(exe, "tray").Start()
+	cmd := exec.Command(exe, "tray")
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Reaped in the background: unwaited, it stays a zombie under the
+	// long-running lerd-ui, and a start run from the tray menu inherits the
+	// daemon env, so this child is the applet itself and never exits.
+	go cmd.Wait() //nolint:errcheck
+	return nil
 }
 
-// trayProcessPatterns match a running tray applet, launched directly or as the
-// lerd-tray binary, and nothing else. Anchored at the end because `lerd tray
-// off` has to kill the applet from a command line that contains those very
-// words, and an unanchored match takes out the command and its shell with it.
-var trayProcessPatterns = []string{`lerd tray( --mono)?$`, `lerd-tray$`}
+// trayProcessPatterns match the applet, bare or with --mono / --mono=false.
+// End anchors keep `lerd tray off` and its shell from matching themselves.
+var trayProcessPatterns = []string{`lerd tray( --mono(=false)?)?$`, `lerd-tray( --mono(=false)?)?$`}
 
-// killTray kills any running lerd tray process.
+// killTray kills any running lerd tray process and waits for it to exit, so a
+// replacement launched next does not find the old applet still holding the
+// instance lock and quit, leaving no tray at all.
 func killTray() {
-	for _, pattern := range trayProcessPatterns {
-		exec.Command("pkill", "-f", pattern).Run() //nolint:errcheck
+	signal := func(sig string) {
+		for _, pattern := range trayProcessPatterns {
+			exec.Command("pkill", "-"+sig, "-f", pattern).Run() //nolint:errcheck
+		}
 	}
+	stopTray(signal, trayRunning, 3*time.Second)
+}
+
+// stopTray sends TERM and escalates to KILL when the applet outlives grace,
+// since a hung applet keeps the lock and its replacement would quit.
+func stopTray(signal func(sig string), running func() bool, grace time.Duration) {
+	signal("TERM")
+	if waitTrayGone(running, grace) {
+		return
+	}
+	signal("KILL")
+	waitTrayGone(running, time.Second)
+}
+
+func trayRunning() bool {
+	for _, pattern := range trayProcessPatterns {
+		if exec.Command("pgrep", "-f", pattern).Run() == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// waitTrayGone polls until running reports false or the timeout passes, and
+// says whether the applet is gone.
+func waitTrayGone(running func() bool, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for running() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true
 }
 
 // reconcileCustomServices heals custom-service drift on start (issue #678).
@@ -1007,11 +1055,35 @@ func reconcileCustomServices() {
 // units exist for all registered (non-paused) sites. This repairs state after
 // an uninstall/reinstall cycle where unit files were deleted but site configs
 // (sites.yaml, .lerd.yaml) were preserved.
+// Seams for restoreFrankenPHPQuadlet, so tests need no unit files.
+var (
+	frankenPHPUnitInstalled = func(name string) bool { return services.Mgr.ContainerUnitInstalled(name) }
+	writeFrankenPHPQuadlet  = podman.WriteFrankenPHPQuadlet
+)
+
+// restoreFrankenPHPQuadlet writes a FrankenPHP site's unit when it is missing,
+// as after a reinstall or a sites:restore. Only lerd install wrote it before,
+// so lerd start left the site proxying to a container that did not exist.
+func restoreFrankenPHPQuadlet(s config.Site) {
+	if !s.IsFrankenPHP() || !config.IsFrankenPHPVersion(s.PHPVersion) ||
+		frankenPHPUnitInstalled(podman.FrankenPHPContainerName(s.Name)) {
+		return
+	}
+	entrypoint, env := s.FrankenPHPQuadletSpec()
+	if err := writeFrankenPHPQuadlet(s.Name, s.Path, s.PHPVersion, entrypoint, env); err != nil {
+		feedback.Warn("restoring %s unit: %v", podman.FrankenPHPContainerName(s.Name), err)
+	}
+}
+
 func restoreSiteInfrastructure() {
 	reg, err := config.LoadSites()
 	if err != nil {
 		return
 	}
+
+	// FPM mounts the provided-env dir, so it has to exist before FPM starts.
+	ensureProvidedEnvDir()
+	defer beginProvidedEnvPass()()
 
 	seenPHP := map[string]bool{}
 	seenSvc := map[string]bool{}
@@ -1050,6 +1122,11 @@ func restoreSiteInfrastructure() {
 			}
 		}
 
+		// The provided-env file lives on tmpfs and is gone after a reboot.
+		if err := refreshProvidedEnv(s, false); err != nil {
+			feedback.Warn("%s: %v", s.Name, err)
+		}
+
 		// Restore the per-site quadlet (and image, if missing) for custom-FPM
 		// PHP sites, so they come back up on `lerd start` after a reinstall.
 		if s.IsCustomFPM() {
@@ -1066,6 +1143,8 @@ func restoreSiteInfrastructure() {
 				}
 			}
 		}
+
+		restoreFrankenPHPQuadlet(s)
 
 		// Restore FPM quadlet for this site's PHP version (shared-FPM PHP sites
 		// only; custom-FPM sites use their per-site container handled above).
@@ -1103,11 +1182,7 @@ func restoreSiteInfrastructure() {
 		// Resolve() returns the rendered CustomService for inline + preset
 		// references (e.g. mariadb-11) and (nil, nil) for built-ins. Without
 		// it, preset references slipped through to the built-in template path.
-		for _, svc := range proj.Services {
-			if seenSvc[svc.Name] {
-				continue
-			}
-			seenSvc[svc.Name] = true
+		for _, svc := range servicesToRestore(proj.Services, seenSvc) {
 			cs, err := svc.Resolve()
 			if err != nil {
 				feedback.Warn("resolving service %q for %s: %v", svc.Name, s.Name, err)
@@ -1140,13 +1215,7 @@ func restoreSiteInfrastructure() {
 				phpVersion = cfg.PHP.DefaultVersion
 			}
 			if w == "stripe" {
-				if parentEnabled {
-					continue
-				}
-				base := siteURL(s.Path)
-				if base != "" {
-					StripeRestoreUnit(s.Name, s.Path, base) //nolint:errcheck
-				}
+				restoreStripeWorker(s)
 				continue
 			}
 			fwName := s.Framework
@@ -1259,6 +1328,16 @@ func dropIdleSuspendedUnits(units []string) []string {
 	return filterSuspendedUnits(units, suspendedWorkerUnitSet())
 }
 
+// dropIdleSuspendedServiceUnits leaves the services idle-suspend put to sleep
+// out of a start list; the next request to a site using one wakes it.
+func dropIdleSuspendedServiceUnits(units []string) []string {
+	asleep := map[string]bool{}
+	for _, name := range config.IdleSuspendedServices() {
+		asleep["lerd-"+name] = true
+	}
+	return filterSuspendedUnits(units, asleep)
+}
+
 // filterSuspendedUnits is the pure filter behind dropIdleSuspendedUnits: it
 // removes any unit whose .timer-stripped name is in suspended.
 func filterSuspendedUnits(units []string, suspended map[string]bool) []string {
@@ -1347,6 +1426,11 @@ func spinnerRunner(jobs []lifecycle.Job) error {
 }
 
 func runStop(_ *cobra.Command, _ []string) error {
+	release, err := podman.LockLifecycle()
+	if err != nil {
+		return fmt.Errorf("lifecycle lock: %w", err)
+	}
+	defer release()
 	return lifecycle.Stop(spinnerRunner)
 }
 
@@ -1354,6 +1438,11 @@ func runQuit(_ *cobra.Command, _ []string) error {
 	// killTray runs before the VM stop: it clears any directly-launched tray
 	// instance launchd and systemd know nothing about, and leaving the icon on
 	// screen for the seconds `podman machine stop` takes reads as a hung quit.
+	release, err := podman.LockLifecycle()
+	if err != nil {
+		return fmt.Errorf("lifecycle lock: %w", err)
+	}
+	defer release()
 	return lifecycle.Quit(spinnerRunner, killTray)
 }
 
@@ -1382,4 +1471,22 @@ func canPromptForPassword() bool { return hasControllingTerminal() }
 func dnsEnabled() bool {
 	cfg, err := config.LoadGlobal()
 	return err == nil && cfg != nil && cfg.DNS.Enabled
+}
+
+// servicesToRestore is the part of a site's service list the restore pass may
+// write units for: each name once across sites, and never one the user removed,
+// which a site still listing it must not undo.
+func servicesToRestore(svcs []config.ProjectService, seen map[string]bool) []config.ProjectService {
+	var out []config.ProjectService
+	for _, svc := range svcs {
+		if seen[svc.Name] {
+			continue
+		}
+		seen[svc.Name] = true
+		if config.ServiceIsRemoved(svc.Name) {
+			continue
+		}
+		out = append(out, svc)
+	}
+	return out
 }

@@ -1,7 +1,10 @@
 package dumps
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -183,5 +186,400 @@ func TestRing_RemoveKeepsOrderAndFreesSpace(t *testing.T) {
 	r.Append(Event{ID: "e"})
 	if got := r.Snapshot(); len(got) != 3 || got[2].ID != "e" {
 		t.Errorf("after append = %v, want b d e", got)
+	}
+}
+
+// One request's events are the ones it ran, plus a browser failure that names
+// it as the request a fetch reached.
+func TestRing_FilterByRID(t *testing.T) {
+	r := NewRing(8)
+	r.Append(Event{V: 1, ID: "a", Kind: KindQuery, Ctx: Context{Type: "fpm", RID: "r1"}})
+	r.Append(Event{V: 1, ID: "b", Kind: KindQuery, Ctx: Context{Type: "fpm", RID: "r2"}})
+	r.Append(Event{V: 1, ID: "c", Kind: KindBrowser, Ctx: Context{Type: "browser", RID: "page"}, Data: []byte(`{"type":"network","rid":"r1"}`)})
+	r.Append(Event{V: 1, ID: "d", Kind: KindBrowser, Ctx: Context{Type: "browser", RID: "r1"}})
+	if got := r.Filter(FilterOpts{RID: "r1"}); !equalIDs(got, []string{"a", "c", "d"}) {
+		t.Errorf("filter rid r1 = %v", ids(got))
+	}
+}
+
+// A ring resized while lerd-ui runs keeps the newest events that fit.
+func TestRing_ResizeKeepsTheNewest(t *testing.T) {
+	r := NewRing(4)
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		r.Append(mkEvent(id))
+	}
+	r.Resize(2)
+	if got := r.Snapshot(); !equalIDs(got, []string{"d", "e"}) || r.Cap() != 2 {
+		t.Fatalf("shrunk = %v cap %d", ids(got), r.Cap())
+	}
+	r.Resize(3)
+	r.Append(mkEvent("f"))
+	r.Append(mkEvent("g"))
+	if got := r.Snapshot(); !equalIDs(got, []string{"e", "f", "g"}) {
+		t.Fatalf("grown = %v", ids(got))
+	}
+}
+
+func TestRing_KeepsEventsAcrossARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "debug-events.db")
+	r, err := OpenRing(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		r.Append(mkEvent(id))
+	}
+	r.Close()
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("buffer file mode = %v, %v; captured SQL and payloads stay private", fi.Mode().Perm(), err)
+	}
+
+	next, err := OpenRing(path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	if got := ids(next.Snapshot()); fmt.Sprint(got) != "[b c]" {
+		t.Fatalf("reopened = %v, want the newest that fit", got)
+	}
+}
+
+func TestRing_ImportTakesInAnOldBufferFileAndDeletesIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dumps-buffer.json")
+	b, _ := json.Marshal([]Event{mkEvent("a"), mkEvent("b"), mkEvent("c")})
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenRing(filepath.Join(filepath.Dir(path), "debug-events.db"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.Import(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(r.Snapshot()); fmt.Sprint(got) != "[b c]" {
+		t.Fatalf("imported = %v, want the newest that fit", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("old buffer file still there: %v", err)
+	}
+}
+
+func TestRing_ImportWithoutAnOldFileStartsEmpty(t *testing.T) {
+	r := NewRing(4)
+	if err := r.Import(filepath.Join(t.TempDir(), "missing.json")); err != nil {
+		t.Fatal(err)
+	}
+	if r.Len() != 0 {
+		t.Fatalf("len = %d", r.Len())
+	}
+}
+
+func TestRing_RequestIDsNamesEveryRequestWithEvents(t *testing.T) {
+	r := NewRing(4)
+	q := mkEvent("a")
+	q.Ctx.RID = "r1"
+	b := Event{V: 1, ID: "b", Kind: KindBrowser, Data: []byte(`{"type":"fetch","rid":"r2"}`)}
+	r.Append(q)
+	r.Append(b)
+	r.Append(mkEvent("c"))
+	got := r.RequestIDs()
+	if len(got) != 2 || !got["r1"] || !got["r2"] {
+		t.Fatalf("request ids = %v", got)
+	}
+}
+
+func TestServer_ForgetRequestsDropsTheirEventsOnly(t *testing.T) {
+	s, err := Listen(nil, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	for _, e := range []Event{
+		{V: ProtocolVersion, ID: "a", Kind: KindQuery, Ctx: Context{RID: "r1"}},
+		{V: ProtocolVersion, ID: "b", Kind: KindBrowser, Data: []byte(`{"rid":"r1"}`)},
+		{V: ProtocolVersion, ID: "c", Kind: KindQuery, Ctx: Context{RID: "r2"}},
+	} {
+		s.Push(e)
+	}
+	s.ForgetRequests([]string{"r1"})
+	if got := ids(s.Snapshot()); fmt.Sprint(got) != "[c]" {
+		t.Fatalf("left = %v", got)
+	}
+}
+
+// Remove filters and rewrites under one lock, so an event appended while it runs
+// is never overwritten by an older copy of the buffer.
+func TestRing_RemoveKeepsEventsAppendedMeanwhile(t *testing.T) {
+	r := NewRing(10000)
+	for i := 0; i < 2000; i++ {
+		r.Append(mkEvent(fmt.Sprintf("old%d", i)))
+	}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 500; i++ {
+			r.Append(mkEvent(fmt.Sprintf("new%d", i)))
+		}
+		close(done)
+	}()
+	for i := 0; i < 50; i++ {
+		r.Remove(func(e Event) bool { return e.ID == "never" })
+	}
+	<-done
+	if got := r.Len(); got != 2500 {
+		t.Fatalf("len = %d, want 2500: events appended during Remove were lost", got)
+	}
+}
+
+func ridEvent(id, rid string) Event {
+	e := mkEvent(id)
+	e.Ctx.RID = rid
+	return e
+}
+
+// A kept request's events outlive the buffer, so a slowest-route bar days old
+// still opens on something.
+func TestRing_KeptRequestSurvivesEviction(t *testing.T) {
+	r := NewRing(2)
+	r.SetKeep(map[string]bool{"r1": true})
+	r.Append(ridEvent("a", "r1"))
+	r.Append(ridEvent("b", "r2"))
+	r.Append(mkEvent("c"))
+	r.Append(mkEvent("d"))
+	if got := ids(r.Snapshot()); fmt.Sprint(got) != "[c d]" {
+		t.Fatalf("snapshot = %v, pinned events stay out of the buffer", got)
+	}
+	if got := ids(r.Filter(FilterOpts{RID: "r1"})); fmt.Sprint(got) != "[a]" {
+		t.Fatalf("filter r1 = %v", got)
+	}
+	if got := r.RequestIDs(); !got["r1"] || got["r2"] {
+		t.Fatalf("request ids = %v", got)
+	}
+}
+
+func TestRing_KeptBrowserEventPinsUnderTheRequestItReached(t *testing.T) {
+	r := NewRing(1)
+	r.SetKeep(map[string]bool{"r1": true})
+	r.Append(Event{V: 1, ID: "a", Kind: KindBrowser, Ctx: Context{RID: "page"}, Data: []byte(`{"type":"fetch","rid":"r1"}`)})
+	r.Append(mkEvent("b"))
+	if got := ids(r.Filter(FilterOpts{RID: "r1"})); fmt.Sprint(got) != "[a]" {
+		t.Fatalf("filter r1 = %v", got)
+	}
+}
+
+func TestRing_SetKeepDropsRequestsNoLongerKept(t *testing.T) {
+	r := NewRing(1)
+	r.SetKeep(map[string]bool{"r1": true})
+	r.Append(ridEvent("a", "r1"))
+	r.Append(mkEvent("b"))
+	r.SetKeep(map[string]bool{"r2": true})
+	if got := r.Filter(FilterOpts{RID: "r1"}); len(got) != 0 {
+		t.Fatalf("filter r1 = %v, want it gone once no longer kept", ids(got))
+	}
+	if r.RequestIDs()["r1"] {
+		t.Fatal("r1 still listed as openable")
+	}
+}
+
+func TestRing_RemoveAndClearReachPinnedEvents(t *testing.T) {
+	r := NewRing(1)
+	r.SetKeep(map[string]bool{"r1": true, "r2": true})
+	r.Append(ridEvent("a", "r1"))
+	r.Append(ridEvent("b", "r2"))
+	r.Append(mkEvent("c"))
+	r.Remove(func(e Event) bool { return e.OfRequest("r1") })
+	if got := r.RequestIDs(); got["r1"] || !got["r2"] {
+		t.Fatalf("after remove = %v", got)
+	}
+	r.Clear()
+	if got := r.RequestIDs(); len(got) != 0 {
+		t.Fatalf("after clear = %v", got)
+	}
+}
+
+func TestRing_ShrinkingPinsKeptEvents(t *testing.T) {
+	r := NewRing(3)
+	r.SetKeep(map[string]bool{"r1": true})
+	r.Append(ridEvent("a", "r1"))
+	r.Append(mkEvent("b"))
+	r.Append(mkEvent("c"))
+	r.Resize(1)
+	if got := ids(r.Filter(FilterOpts{RID: "r1"})); fmt.Sprint(got) != "[a]" {
+		t.Fatalf("filter r1 = %v", got)
+	}
+}
+
+func TestRing_KeptRequestSurvivesARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "debug-events.db")
+	keep := map[string]bool{"r1": true}
+	r, err := OpenRing(path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetKeep(keep)
+	r.Append(ridEvent("a", "r1"))
+	r.Append(mkEvent("b"))
+	r.Append(mkEvent("c"))
+	r.Close()
+
+	next, err := OpenRing(path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	next.SetKeep(keep)
+	if got := ids(next.Snapshot()); fmt.Sprint(got) != "[b c]" {
+		t.Fatalf("buffer = %v", got)
+	}
+	if got := ids(next.Filter(FilterOpts{RID: "r1"})); fmt.Sprint(got) != "[a]" {
+		t.Fatalf("filter r1 = %v", got)
+	}
+}
+
+// FilterJSON hands back what Filter selects as the JSON array the API serves,
+// copied from the stored rows rather than decoded and encoded again.
+func TestRing_FilterJSONMatchesFilter(t *testing.T) {
+	r := NewRing(3)
+	for _, id := range []string{"a", "b", "c", "d"} {
+		r.Append(ridEvent(id, "r"+id))
+	}
+	for _, opts := range []FilterOpts{{}, {Limit: 2}, {RID: "rc"}, {SinceID: "c"}, {Kind: "nope"}} {
+		want, _ := json.Marshal(r.Filter(opts))
+		if got := r.FilterJSON(opts); string(got) != string(want) {
+			t.Errorf("FilterJSON(%+v) = %s, want %s", opts, got, want)
+		}
+	}
+}
+
+func kindEvent(id, site, kind string) Event {
+	e := mkEvent(id)
+	e.Ctx.Site, e.Kind = site, kind
+	return e
+}
+
+// The Debug lens bar's badges come from here rather than from whatever a tab
+// happened to load: a page view names its page but is not a row of its own,
+// and a test run counts only when asked for.
+func TestRing_CountsPerKindForASite(t *testing.T) {
+	r := NewRing(10)
+	r.Append(kindEvent("a", "acme", KindQuery))
+	r.Append(kindEvent("b", "acme", KindQuery))
+	r.Append(kindEvent("c", "acme", KindView))
+	r.Append(kindEvent("d", "other", KindQuery))
+	nav := kindEvent("e", "acme", KindBrowser)
+	nav.Data = []byte(`{"type":"navigation"}`)
+	r.Append(nav)
+	test := kindEvent("f", "acme", KindQuery)
+	test.Ctx.Test = true
+	r.Append(test)
+
+	got := r.Counts(FilterOpts{Site: "acme", HideTests: true})
+	if fmt.Sprint(got) != "map[query:2 view:1]" {
+		t.Errorf("counts = %v, want two queries and a view", got)
+	}
+	if got := r.Counts(FilterOpts{Site: "acme"}); got[KindQuery] != 3 {
+		t.Errorf("with tests, queries = %d, want 3", got[KindQuery])
+	}
+	if got := r.TestCount(FilterOpts{Site: "acme"}); got != 1 {
+		t.Errorf("hidden tests = %d, want 1", got)
+	}
+}
+
+// A lens loads the newest page of its kind and pages back by id from there.
+func TestRing_FilterPagesBackBeforeAnID(t *testing.T) {
+	r := NewRing(10)
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		r.Append(kindEvent(id, "acme", KindQuery))
+	}
+	r.Append(kindEvent("f", "acme", KindView))
+	page := r.Filter(FilterOpts{Kind: KindQuery, Limit: 2})
+	if fmt.Sprint(ids(page)) != "[d e]" {
+		t.Fatalf("first page = %v", ids(page))
+	}
+	older := r.Filter(FilterOpts{Kind: KindQuery, Limit: 2, Before: page[0].ID})
+	if fmt.Sprint(ids(older)) != "[b c]" {
+		t.Errorf("older page = %v, want [b c]", ids(older))
+	}
+}
+
+func TestRing_FilterHidesTestRuns(t *testing.T) {
+	r := NewRing(10)
+	r.Append(mkEvent("a"))
+	test := mkEvent("b")
+	test.Ctx.Test = true
+	r.Append(test)
+	if got := ids(r.Filter(FilterOpts{HideTests: true})); fmt.Sprint(got) != "[a]" {
+		t.Errorf("filter = %v, want the test event left out", got)
+	}
+}
+
+func TestRing_SitesListsEverySiteInTheBuffer(t *testing.T) {
+	r := NewRing(10)
+	r.Append(kindEvent("a", "beta", KindQuery))
+	r.Append(kindEvent("b", "acme", KindView))
+	r.Append(kindEvent("c", "beta", KindView))
+	if got := r.Sites(); fmt.Sprint(got) != "[acme beta]" {
+		t.Errorf("sites = %v", got)
+	}
+}
+
+// An old buffer file is the only copy of its events until they are on disk,
+// so it stays when they could not all be written or the ring is in memory.
+func TestRing_ImportKeepsTheOldFileUnlessEveryEventLanded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dumps-buffer.json")
+	b, _ := json.Marshal([]Event{mkEvent("a"), mkEvent("b")})
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mem := NewRing(4)
+	if err := mem.Import(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("an in-memory ring deleted the only copy of the old buffer")
+	}
+
+	disk, err := OpenRing(filepath.Join(dir, "debug-events.db"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk.Close() // every write now fails
+	if err := disk.Import(path); err == nil {
+		t.Error("import into a closed database reported success")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Error("a failed import deleted the old buffer")
+	}
+}
+
+// An import that fails part way writes nothing, so the retry on the next
+// start cannot store the same events twice.
+func TestRing_ImportIsAllOrNothing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dumps-buffer.json")
+	bad := mkEvent("bad")
+	bad.Data = []byte(`{"broken"`) // fails to encode, after "a" was written
+	b, _ := json.Marshal([]Event{mkEvent("a")})
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenRing(filepath.Join(dir, "debug-events.db"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.importEvents([]Event{mkEvent("a"), bad}); err == nil {
+		t.Fatal("an event that cannot be encoded was imported")
+	}
+	if n := r.Len(); n != 0 {
+		t.Errorf("after a failed import the buffer holds %d events, want none", n)
+	}
+	if err := r.Import(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(r.Snapshot()); fmt.Sprint(got) != "[a]" {
+		t.Errorf("after the retry = %v, want each event once", got)
 	}
 }

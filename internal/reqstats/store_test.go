@@ -1,6 +1,7 @@
 package reqstats
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -316,5 +317,76 @@ func TestStorePruneDropsOldRows(t *testing.T) {
 	a, _ := s.SiteAnalytics("app", base.Add(-72*time.Hour), base.Add(time.Hour))
 	if a.Samples != 4 {
 		t.Errorf("remaining samples = %d, want 4", a.Samples)
+	}
+}
+
+// A recent request keeps the id it was logged with, so the dashboard can open
+// what debug capture recorded for it.
+func TestStoreRecentKeepsTheRequestID(t *testing.T) {
+	s := tempStore(t)
+	rec := RecordFrom(AccessRecord{Host: "app.test", Status: 200, RequestTime: 0.02, Method: "GET", URI: "/a", RID: "19a2b3c4d5e6f7a1"}, "app", base)
+	if err := s.Insert([]Record{rec}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	recent, err := s.Recent("app", 1)
+	if err != nil || len(recent) != 1 {
+		t.Fatalf("Recent = %v, %v", recent, err)
+	}
+	if recent[0].RID != "19a2b3c4d5e6f7a1" {
+		t.Errorf("rid = %q", recent[0].RID)
+	}
+}
+
+// A route's time bar opens its slowest warm request, so each route names it.
+func TestStoreAnalyticsNamesEachRoutesSlowestRequest(t *testing.T) {
+	s := tempStore(t)
+	recs := []Record{
+		{At: base, Site: "acme", Method: "GET", Route: "GET /users/:id", URI: "/users/1", Status: 200, Millis: 40, RID: "r1"},
+		{At: base.Add(time.Second), Site: "acme", Method: "GET", Route: "GET /users/:id", URI: "/users/2?tab=a", Status: 200, Millis: 90, RID: "r2"},
+		{At: base.Add(2 * time.Second), Site: "acme", Method: "GET", Route: "GET /users/:id", URI: "/users/3", Status: 200, Millis: 900, Cold: true, RID: "r3"},
+	}
+	seed(t, s, recs)
+	a, err := s.SiteAnalytics("acme", base.Add(-time.Minute), base.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := a.Routes[0].Slowest
+	if got == nil || got.RID != "r2" || got.URI != "/users/2?tab=a" || got.Millis != 90 || got.AtMillis != base.Add(time.Second).UnixMilli() {
+		t.Fatalf("slowest = %+v, want the 90 ms warm request; a cold start is not the route being slow", got)
+	}
+}
+
+// A request no later one outran can still come to lead a window as older ones
+// age out of it, so it is kept before it leads; one a later request beat never can.
+func TestStoreSlowestRIDsKeepsEveryPotentialWinner(t *testing.T) {
+	s := tempStore(t)
+	at := func(m int) time.Time { return base.Add(time.Duration(m) * time.Minute) }
+	req := func(m int, site, route string, ms float64, rid string) Record {
+		return Record{At: at(m), Site: site, Method: "GET", Route: "GET " + route, URI: route, Status: 200, Millis: ms, RID: rid}
+	}
+	cold := req(-1, "acme", "/a", 5000, "cold")
+	cold.Cold = true
+	seed(t, s, []Record{
+		req(-20, "acme", "/a", 300, "beaten"),
+		req(-10, "acme", "/a", 900, "leader"),
+		req(-9, "acme", "/a", 800, "next"),
+		req(-8, "acme", "/a", 100, "newest"),
+		cold,
+		req(-5, "acme", "/a.css", 9000, "asset"),
+		req(-5, "acme", "/silenced", 700, "silenced"),
+		req(-5, "acme/feature", "/a", 50, "branch"),
+		req(-5, "acme/feature", "/silenced", 700, "branch-silenced"),
+		req(-5, "other", "/b", 30, "other"),
+	})
+	if err := s.ExcludeRoute("acme", "GET /silenced"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SlowestRIDs(at(-60))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"leader": true, "next": true, "newest": true, "branch": true, "other": true}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("slowest rids = %v, want %v", got, want)
 	}
 }

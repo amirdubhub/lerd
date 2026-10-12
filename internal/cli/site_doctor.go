@@ -114,6 +114,32 @@ func createMissingDatabases(path string, quiet bool) (bool, error) {
 	return created, nil
 }
 
+// migrateCreatedDatabases runs the framework's declared migrate command after
+// --fix created a database, which is empty until it does. Only the definition's
+// own command runs, never one a project's .lerd.yaml supplies.
+func migrateCreatedDatabases(path, fwName string, quiet bool) error {
+	fw, _ := config.GetFrameworkForDir(fwName, path)
+	if fw == nil {
+		if name, ok := config.DetectFramework(path); ok {
+			fw, _ = config.GetFrameworkForDir(name, path)
+		}
+	}
+	c, runDir, ok := resolveMigrateCommand(fw, path)
+	if !ok {
+		return nil
+	}
+	cmd := newCommandExec(runDir, c.Command)
+	cmd.Stdout = fixOutput(quiet)
+	cmd.Stderr = fixOutput(quiet)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", c.Command, err)
+	}
+	if !quiet {
+		fmt.Printf("  %s\n\n", feedback.Dim("ran "+c.Command))
+	}
+	return nil
+}
+
 // createMissingBuckets creates the entities the site claims on a service that
 // does not hold them. The create command comes from the service's own
 // declaration, so nothing here knows what a bucket is.
@@ -186,6 +212,9 @@ func applySiteDoctorFixes(path, fwName string, resp sitedoctor.Response, quiet b
 			}
 			if created {
 				fixed = true
+				if err := migrateCreatedDatabases(path, fwName, quiet); err != nil {
+					feedback.Warn("migrating the new database: %v", err)
+				}
 			}
 		case sitedoctor.FixCreateBucket:
 			created, err := createMissingBuckets(path, quiet)

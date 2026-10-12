@@ -35,8 +35,8 @@ func NewUpdateCmd(currentVersion string) *cobra.Command {
 		Short: "Update Lerd to the latest release",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if rollback {
-				if runtime.GOOS == "darwin" {
-					return fmt.Errorf("rollback is not supported on macOS — use 'brew switch lerd <version>' instead")
+				if err := rollbackSupported(); err != nil {
+					return err
 				}
 				return runRollback()
 			}
@@ -614,9 +614,13 @@ func pluralS(n int) string {
 // users who enabled globally without Claude Code (Cursor-only, Junie-only) and
 // users whose `claude` CLI is temporarily unavailable.
 func mcpEnabledGlobally(home string) bool {
-	if IsMCPGloballyRegistered() {
-		return true
-	}
+	return IsMCPGloballyRegistered() || MCPGlobalConfigured(home)
+}
+
+// MCPGlobalConfigured reports whether mcp:enable-global's marker files are in
+// place. It reads files only, never the claude CLI, so the dashboard can ask on
+// every settings load without starting a process.
+func MCPGlobalConfigured(home string) bool {
 	markers := []string{
 		filepath.Join(home, ".claude", "skills", "lerd", "SKILL.md"),
 		filepath.Join(home, ".cursor", "rules", "lerd.mdc"),
@@ -698,16 +702,12 @@ func isSystemPackageManaged(path string) bool {
 	if strings.HasPrefix(path, "/nix/store/") {
 		return true
 	}
-	// The /usr prefixes only mean "packaged" where a deb/rpm/pacman could have
-	// put it there. On macOS /usr/local is an ordinary install prefix (and where
-	// Intel Homebrew lives), with no package manager to hand the job to.
-	if runtime.GOOS != "linux" {
-		return false
+	for _, prefix := range packagedPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
 	}
-	// /var/usrlocal is what /usr/local resolves to on ostree systems
-	// (Silverblue), where selfPath's symlink resolution hides the /usr prefix.
-	return strings.HasPrefix(path, "/usr/") ||
-		strings.HasPrefix(path, "/var/usrlocal/")
+	return false
 }
 
 // lookPath is a seam for tests.
@@ -872,6 +872,7 @@ func runRollback() error {
 	// on sd_notify(READY=1) which the old binary never sends. Strip it so
 	// the cache picks up Type=simple immediately.
 	prepUserUnitsForRollback("lerd-ui.service", "lerd-watcher.service")
+	prepDNSForRollback()
 
 	feedback.Note(fmt.Sprintf("Rolled back to v%s, applying infrastructure changes...", prevVersion))
 

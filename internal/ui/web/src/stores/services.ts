@@ -6,6 +6,7 @@ import { pullSize } from '$lib/bytes';
 import { confirmDownload } from './downloadConfirm';
 import { sites } from './sites';
 import { groupByCategory, type CategoryGroup } from '$lib/presetCategories';
+import { announce, serviceStatusChanges } from '$lib/announce';
 
 // One published port of a service: its container-internal port, its preset
 // default host port, and the current host override (0/undefined = on default).
@@ -49,6 +50,8 @@ export interface Service {
   site_domains?: string[];
   pinned?: boolean;
   paused?: boolean;
+  // Stopped by idle-suspend; it wakes on the next request or dashboard visit.
+  idle_suspended?: boolean;
   depends_on?: string[];
   // Resolved from the service's preset YAML, so a service predating these
   // fields still renders with the right category, icon and brand colour.
@@ -132,8 +135,12 @@ export async function loadServices() {
 
 export function applyServices(data: unknown) {
   if (!Array.isArray(data)) return;
+  const changes = serviceStatusChanges(get(services), data as Service[], isWorker);
   services.set(data as Service[]);
   servicesLoaded.set(true);
+  if (changes.length > 0) {
+    announce(changes.map((c) => `${serviceLabel(c.name)}: ${c.running ? m.common_running() : m.common_stopped()}`).join('. '));
+  }
 }
 
 wsMessage.subscribe((msg) => {
@@ -205,6 +212,10 @@ export async function serviceAction(
   action: ServiceAction,
   opts: { removeData?: boolean } = {}
 ): Promise<boolean> {
+  // A first start fetches the image, so it asks like every other download.
+  if (action === 'start' && !(await confirmDownload(serviceLabel(name), { service: name, action }))) {
+    return false;
+  }
   try {
     const params = new URLSearchParams();
     if (action === 'remove' && opts.removeData) params.set('removeData', 'true');
@@ -709,6 +720,12 @@ export async function resetServiceTuning(name: string): Promise<ResetTuningResul
 
 export function findService(name: string): Service | undefined {
   return get(services).find((s) => s.name === name);
+}
+
+// serviceOpenable reports whether a service's dashboard can be opened: it is
+// running, or idle-suspend put it to sleep and opening the dashboard wakes it.
+export function serviceOpenable(svc: Service): boolean {
+  return svc.status === 'active' || !!svc.idle_suspended;
 }
 
 export function serviceLabel(name: string): string {

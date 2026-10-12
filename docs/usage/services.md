@@ -42,6 +42,10 @@ Default services are defined as YAML presets with `default: true` in the lerd bi
 
 The Web UI, the TUI, and `lerd status` display the same labels. Services pinned to rolling tags (`latest`, `main`) show the tag verbatim. Services where an update is available show `→ <new-tag>`; cross-strategy upgrades show `⇧ <new-tag>` in amber.
 
+### An interrupted first start
+
+A database engine initialises its data directory the first time it starts, and a start stopped halfway through (a `lerd stop` or a reboot at the wrong moment) leaves files the engine then refuses to open on every later start. lerd remembers which data directories it created and that have not come up since, and when such a service fails to become ready it moves the unfinished directory aside as `<name>.incomplete-first-start-<time>` under `~/.local/share/lerd/data`, then starts the service once more on a clean one. A data directory that has ever come up, or that lerd did not create, is never touched.
+
 ### Exposing extra ports on bundled services
 
 Bundled services publish a fixed set of ports by default. Use `lerd service expose` to bind additional host ports without recompiling or replacing the service. This works for any service lerd ships as a preset, both the default-stack ones (MySQL, PostgreSQL, Redis) and the optional ones you install on demand (Gotenberg, MongoDB, Elasticsearch, and so on). Only genuinely custom services you define yourself are excluded, since those declare their ports in their own YAML.
@@ -71,7 +75,7 @@ You can also manage extra ports from the dashboard: open a service and switch to
 
 ### Moving a service's published host port
 
-Each service publishes on a default host port (MySQL `3306`, PostgreSQL `5432`, Redis `6379`, and so on). Every member of a service family shares that one canonical port rather than pre-spacing itself, so a single database of any family lands on the familiar port. When lerd writes a service's quadlet and the port can't be bound, or another installed same-family service already holds it, it shifts the service to the next free port and records it, so the container comes up cleanly instead of failing to bind. The decision is made purely from port availability and what other lerd services already claim: lerd never inspects host files, sockets, or installed packages. It applies to every service, not just databases, and to every published mapping, not just the primary one. A port a service is already recorded on is checked the same way: something else can take it while the service is down, so rather than fail to bind on the next start, the service moves to a free port and records that. A service whose container is up is never moved, since the listener holding its port is its own.
+Each service publishes on a default host port (MySQL `3306`, PostgreSQL `5432`, Redis `6379`, and so on). Every member of a service family shares that one canonical port rather than pre-spacing itself, so a single database of any family lands on the familiar port. When lerd writes a service's quadlet and the port can't be bound, or another installed same-family service already holds it, it shifts the service to the next free port and records it, so the container comes up cleanly instead of failing to bind. The decision is made purely from port availability and what other lerd services already claim: lerd never inspects host files, sockets, or installed packages. It applies to every service, not just databases, and to every published mapping, not just the primary one. A port a service is already recorded on is checked the same way on Linux: something else can take it while the service is down, so rather than fail to bind on the next start, the service moves to a free port and records that. A service whose container is up is never moved, since the listener holding its port is its own. On macOS a recorded port is not re-checked, because the Podman VM can keep a service's own port bound after it stops, and moving it then would leave the sites using it behind; if something else really has taken it, move the service with `lerd service port`.
 
 Move a port yourself, or undo an automatic shift, with `lerd service port`:
 
@@ -83,7 +87,7 @@ lerd service port mysql 3307
 lerd service port mysql --reset   # or: lerd service port mysql 0
 ```
 
-The container-internal port never changes, so containerized apps (which reach the service by name over the `lerd` network) are unaffected. Only host clients pointed at the old published port need to follow. Sites that connect over the published loopback port have their `.env` regenerated automatically when the port moves: [host-proxy sites](host-proxy.md), and every site under the [native runtime](../features/native-runtime.md), whose PHP runs on the host and reaches services the same way. A site that is paused when the port moves is skipped at that moment and picks up the new port when it is next unpaused.
+The container-internal port never changes, so containerized apps (which reach the service by name over the `lerd` network) are unaffected. Only host clients pointed at the old published port need to follow. Sites that connect over the published loopback port have their `.env` regenerated automatically when the port moves: [host-proxy sites](host-proxy.md), and every site under the [native runtime](../features/native-runtime.md), whose PHP runs on the host and reaches services the same way. Their env names `127.0.0.1` rather than the service, so lerd finds them through the services `lerd env` last wired into them, which it records in the site registry; a site last wired by an older lerd is found once `lerd env` has run in it again. A site that is paused when the port moves is skipped at that moment and picks up the new port when it is next unpaused.
 
 Some services publish more than one host port: Mailpit exposes SMTP on `1025` and its web UI on `8025`, RustFS the S3 API on `9000` and the console on `9001`, Selenium the WebDriver on `4444` and the noVNC view on `7900`. `lerd service port <name> <port>` moves the primary (first) mapping. To move any other published port, name the mapping by its container-internal port with `--container`:
 
@@ -108,6 +112,12 @@ Every published port can also be moved from the dashboard: a service's **Ports**
 ::: warning Known limitation
 The shift is decided at quadlet-write time, from whether the port can be bound right then. A host server that is installed but stopped at that moment leaves its port looking free, so lerd may take it and clash when that server next starts (for example at boot). This is the deliberate trade for not inspecting the host: a host database is usually running, and the failure is loud. Recover by moving lerd onto a free port with `lerd service port <name> <port>`.
 :::
+
+### Which services the Overview shows
+
+The site Overview treats a service as in use when the project lists it in `.lerd.yaml`, when the env file names its container (`lerd-redis`), or when the site registry records that `lerd env` last wired it. Native sites and [host-proxy sites](host-proxy.md) reach services at `127.0.0.1`, so their env files name the loopback address; the registry record is what keeps those services on the Overview and out of the suggestion row. Container sites are read from the same record.
+
+A recorded service stays listed while its quadlet is installed, whether the container is running or stopped, and a custom service is included the same way. A service that is only recorded, not declared, has a declare button on its card rather than a remove button: declare it first, then remove it. Removing a service from the Overview is remembered, so the registry entry left behind does not put it back, and a service whose quadlet is gone leaves no badge behind. A site last wired by an older lerd has no record yet: run `lerd env` in the project once and the Overview lists the services that command wired.
 
 ---
 

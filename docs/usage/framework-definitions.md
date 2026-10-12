@@ -225,6 +225,20 @@ It sits beside `services:` rather than among them because SQLite is not a servic
 
 Choosing it records nothing in `.lerd.yaml`, for the same reason: the project's own configuration already says it is on SQLite, which is what lerd reads to answer that question. An entry left by an older lerd is ignored where it is found.
 
+### A default database
+
+A scaffold that names no database until its own installer runs leaves nothing to detect, so `lerd env` would write no connection and the installer would have nothing to install against. `env.default_service` names the `services:` entry such a project is wired to:
+
+```yaml
+env:
+  default_service: mysql
+  services:
+    mysql:
+      # …
+```
+
+It applies only when the project names no database at all: nothing in its configuration matches a database service's detect rules or the `sqlite` block, `.lerd.yaml` picks none, and no external database is set in `.env.lerd_override`. A project already on PostgreSQL or SQLite is never rewired, and nothing is written to `.lerd.yaml`, since from then on the project's own configuration says which engine it uses. The value must be a key of `services:`; a binary that finds one it does not define refuses the run and names it rather than guessing. It is a field an older binary ignores, which is why it is not an `absent` detect rule: a release before `absent` existed would read that rule as matching any project with the key set and rewire a working site.
+
 ### Drop-in services
 
 A service preset publishes its connection under Laravel's key names (`DB_HOST`, `REDIS_HOST`), because that is what most projects read. Your framework may not: Drupal reads `DB_NAME` and `DB_USER`, Symfony and CakePHP read a `DATABASE_URL`, Magento addresses its config by dotted path. Those keys are the ones you declare under `env.services`, and they are what lerd writes.
@@ -295,6 +309,9 @@ env:
     vars:
       - "DB_CONNECTION=sqlite"
       - "DB_DATABASE=database/database.sqlite"
+
+  default_service: mysql          # services: entry wired when the project names no
+                                  # database at all (optional)
 
   # Per-service env detection and variable injection for `lerd env`
   #
@@ -460,7 +477,7 @@ install:
 # not they are installed yet (optional). The reason is shown beside the suggestion.
 # A package declares the same key, and its services are ticked in the wizard and
 # suggested on the site's Overview, since requiring the package means the project
-# uses them. A package's entries are alternatives, most important first: lerd puts
+# uses them, with the package named beside the service. A package's entries are alternatives, most important first: lerd puts
 # forward the first one this machine already runs, else the first, and none at all
 # when the project already uses one of them.
 suggest_services:
@@ -522,6 +539,9 @@ nginx:
     location /static/ {
       try_files $uri $uri/ /static.php?$args;
     }
+
+# Hand every .php URL to index.php instead of the file it names (optional)
+front_controller: true
 
 # What a new worktree needs once its env file is seeded (optional)
 worktree:
@@ -635,7 +655,7 @@ The repeated-query warning is the case that needs it. On a content management sy
 
 The `doctor:` section adds framework-specific health checks to the ones every site gets for free (a valid `.lerd.yaml`, env file present, every picked service wired into it, dependencies installed and locked, audit clean, PHP version in range, nginx vhost current). They run on `lerd site:doctor` and in the dashboard's doctor panel. Keeping them declarative is what stops the doctor from growing a Go branch per framework.
 
-The section also takes a `migrate_command`, naming whichever of the framework's own `commands:` applies the schema. The universal database checks offer it as their fix, so an empty or missing database is reported with the button that fills it. A server database that does not exist at all is the exception: migrations have nowhere to run until the schema is there, so that finding carries a button that creates it and the migrate button returns on the re-check. Every framework spells it differently (Laravel `migrate`, Symfony `doctrine:migrations:migrate`, Drupal `updb`), so nothing but the definition can say; a framework that declares none, or names a command it does not have, gets a finding with no fix rather than a button that maps to nothing.
+The section also takes a `migrate_command`, naming whichever of the framework's own `commands:` applies the schema. The universal database checks offer it as their fix, so an empty or missing database is reported with the button that fills it. A server database that does not exist at all is the exception: migrations have nowhere to run until the schema is there, so that finding carries a button that creates it and the migrate button returns on the re-check. `lerd site:doctor --fix` goes one step further and runs `migrate_command` itself right after creating the database, since the schema it just made is empty; pending migrations on a database that already existed are still left to you. A site whose database sits on a service lerd has not installed fails the same check, naming the service and the `lerd service start` that installs it. Every framework spells it differently (Laravel `migrate`, Symfony `doctrine:migrations:migrate`, Drupal `updb`), so nothing but the definition can say; a framework that declares none, or names a command it does not have, gets a finding with no fix rather than a button that maps to nothing.
 
 Each check carries a `name` (a stable id), a `type` that selects the evaluator, an optional `label` for display, an optional `detail` that overrides the generated message, an optional `severity`, an optional `fix`, and an optional `check`.
 
@@ -760,6 +780,8 @@ The snippet must have balanced braces, since an unbalanced one would close the e
 
 Snippets are only honoured from the framework store and from user-defined definitions: an embedded `framework_def` in a project's `.lerd.yaml` is untrusted input, so its `nginx` block is stripped, the same way its host workers and command-type doctor checks are.
 
+An app whose router owns its `.php` URLs needs no snippet at all. `front_controller: true` makes `index.php` the only script nginx runs: a request for any other `.php` file is rewritten onto it, with the original URL still in `REQUEST_URI`, and `PATH_INFO` is split off for URLs like `/index.php/api/status`. GLPI 11 is the case it exists for, where `/front/central.php` is a route rather than a file on disk. It is plain routing rather than raw config, so unlike the snippet it is kept in an embedded `framework_def`, and a project can also set it on its own in `.lerd.yaml` (see [nginx overrides](nginx-overrides.md#a-single-front-controller)).
+
 This is distinct from the per-site [nginx override](nginx-overrides.md) in `custom.d/`, which you author yourself and which is included at the *end* of the server block. Use the framework snippet for what every site of that framework needs; use the override for what one site needs.
 
 ## Framework detection
@@ -804,8 +826,8 @@ The App Logs tab is the first tab in the site detail view. When the UI opens it 
 Features:
 
 - **File selector**: switch between available log files (e.g. `laravel.log`, `worker.log`), sorted by modification time with the newest file pre-selected
-- **Latest / All toggle**: "Latest" shows the last 100 entries (default), "All" reads the entire file
-- **Search**: filter entries by message, level, date, or stacktrace content
+- **Paged loading**: the newest entries load first and older ones arrive a page at a time as you scroll up, so a log of hundreds of megabytes opens as quickly as a small one
+- **Search**: filter the loaded entries by message, level, date, or stacktrace content
 - **Expandable entries**: click any entry to expand and see the full detail and stacktrace
 - **Auto-refresh**: polls every 5 seconds while the tab is active, keeping the expanded entry open
 - **Color-coded levels**: entries are color-coded by severity (red for ERROR/CRITICAL/EMERGENCY/ALERT, yellow for WARNING, blue for INFO/NOTICE, grey for DEBUG)

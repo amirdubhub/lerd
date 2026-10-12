@@ -23,11 +23,21 @@ func updateProjectConfig(dir string, fn func(*ProjectConfig)) error {
 	return SaveProjectConfig(dir, cfg)
 }
 
-// SetProjectSecured updates the secured field. No-op if .lerd.yaml does not exist.
+// SetProjectSecured records HTTPS in .lerd.yaml. Securing creates the file when
+// the project has none, since a later link reads HTTPS only from here once the
+// registry entry is gone; unsecuring is the default and creates nothing.
 func SetProjectSecured(dir string, secured bool) error {
-	return updateProjectConfig(dir, func(cfg *ProjectConfig) {
-		cfg.Secured = secured
-	})
+	if !secured {
+		return updateProjectConfig(dir, func(cfg *ProjectConfig) {
+			cfg.Secured = false
+		})
+	}
+	cfg, err := LoadProjectConfig(dir)
+	if err != nil {
+		return err
+	}
+	cfg.Secured = true
+	return SaveProjectConfig(dir, cfg)
 }
 
 // SetProjectPHPVersion updates php_version. No-op if .lerd.yaml does not exist.
@@ -314,6 +324,24 @@ func AddProjectServices(dir string, svcs []ProjectService) error {
 	if !added {
 		return nil
 	}
+	return SaveProjectConfig(dir, cfg)
+}
+
+// RemoveProjectService drops a service from .lerd.yaml. It fails when the
+// service is not listed there, including when the file is missing.
+func RemoveProjectService(dir, name string) error {
+	cfg, err := LoadProjectConfig(dir)
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		return fmt.Errorf("%s is not listed in .lerd.yaml", name)
+	}
+	i := slices.IndexFunc(cfg.Services, func(s ProjectService) bool { return s.Name == name })
+	if i < 0 {
+		return fmt.Errorf("%s is not listed in .lerd.yaml", name)
+	}
+	cfg.Services = slices.Delete(cfg.Services, i, i+1)
 	return SaveProjectConfig(dir, cfg)
 }
 

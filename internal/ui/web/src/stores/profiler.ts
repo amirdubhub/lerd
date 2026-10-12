@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { apiFetch, apiJson } from '$lib/api';
+import { apiFetch, apiJson, sharedJson } from '$lib/api';
 import { wsMessage } from '$lib/ws';
 
 // profilerEnabled mirrors the global SPX profiler toggle.
@@ -7,7 +7,7 @@ export const profilerEnabled = writable<boolean>(false);
 
 export async function loadProfilerStatus(): Promise<void> {
   try {
-    const s = await apiJson<{ enabled: boolean }>('/api/profiler/status');
+    const s = await sharedJson<{ enabled: boolean }>('/api/profiler/status');
     profilerEnabled.set(Boolean(s.enabled));
   } catch {
     /* keep previous value */
@@ -78,3 +78,14 @@ wsMessage.subscribe((msg) => {
   const fresh = msg?.profiler_status as { enabled: boolean } | undefined;
   if (fresh) profilerEnabled.set(Boolean(fresh.enabled));
 });
+
+// profileKeyFor names the SPX capture of one request, by the id lerd wrote onto
+// it, or '' when that request was not profiled.
+export async function profileKeyFor(rid: string): Promise<string> {
+  try {
+    const d = await apiJson<{ key: string }>(`/api/profiler/report?${new URLSearchParams({ rid })}`);
+    return d.key ?? '';
+  } catch {
+    return '';
+  }
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"os"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/geodro/lerd/internal/config"
 	"github.com/geodro/lerd/internal/idle"
+	"github.com/geodro/lerd/internal/platform"
 	"github.com/geodro/lerd/internal/push"
 	"github.com/geodro/lerd/internal/reqstats"
 )
@@ -47,6 +47,10 @@ var (
 // reqStatsSaveInterval is how often the request-timing snapshot is flushed to
 // disk for lerd-ui. Shorter than the idle tick so the panel feels live.
 const reqStatsSaveInterval = 10 * time.Second
+
+// reqStoreFlushInterval is how soon a request reaches the durable store, which
+// the dashboard watches to update a site's recent requests as they happen.
+const reqStoreFlushInterval = time.Second
 
 // reqStatsPruneInterval throttles how often rows past reqstats.Retention are
 // pruned, which is what keeps the DB small.
@@ -216,9 +220,17 @@ func ingestAccessRecord(rec reqstats.AccessRecord) {
 // slow. Runs for the daemon's life, independent of idle. push.Send is a no-op
 // when no subscription has opted into the slow_route kind.
 func runReqStatsSaver() {
-	t := time.NewTicker(reqStatsSaveInterval)
-	defer t.Stop()
-	for range t.C {
+	save := time.NewTicker(reqStatsSaveInterval)
+	defer save.Stop()
+	flush := time.NewTicker(reqStoreFlushInterval)
+	defer flush.Stop()
+	for {
+		select {
+		case <-flush.C:
+			flushPendingRequests()
+			continue
+		case <-save.C:
+		}
 		if reqAggregator == nil {
 			continue
 		}
@@ -231,6 +243,19 @@ func runReqStatsSaver() {
 			_ = push.Send(n)
 		}
 	}
+}
+
+// flushPendingRequests writes buffered requests between save ticks. A quiet
+// second costs nothing; only a non-empty buffer reads the exclusions and writes.
+func flushPendingRequests() {
+	reqBufMu.Lock()
+	pending := len(reqBuf)
+	reqBufMu.Unlock()
+	if pending == 0 || reqAggregator == nil {
+		return
+	}
+	refreshReqExcludes()
+	flushReqStore()
 }
 
 // flushReqStore writes the buffered access records to the durable store in one
@@ -320,7 +345,7 @@ func startAccessFeed() {
 // datagram socket on Linux (bind-mounted into the rootless nginx container), or
 // UDP on macOS where nginx is in the VM and the host socket isn't reachable.
 func accessFeedConn() (net.PacketConn, bool) {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return listenUDP(config.AccessFeedListenAddr())
 	}
 	return listenDatagram(config.AccessSocketPath())
@@ -373,7 +398,21 @@ func resolveHostToSite(host string) (string, bool) {
 	if wt, ok := wtIndex.lookup(host); ok {
 		return wtKey(wt.Site, wt.Base), true
 	}
-	return siteNameForHost(host)
+	if name, ok := siteNameForHost(host); ok {
+		return name, true
+	}
+	return serviceKeyForHost(host)
+}
+
+// serviceKeyForHost maps a service's own domain to its idle key, so traffic to
+// it keeps the service awake and wakes it when asleep.
+func serviceKeyForHost(host string) (string, bool) {
+	for name, domain := range config.ServiceDomains() {
+		if domain == host {
+			return svcKey(name), true
+		}
+	}
+	return "", false
 }
 
 // resolveHostToStatsKey maps a request host to its request-store key. It is the
@@ -416,12 +455,11 @@ func seedActiveSites(t *idle.Tracker) {
 			t.TouchSite(s.Name, now)
 		}
 	}
-	// Restore persisted worktree countdowns too (their keys carry a "/"), so a
-	// restart doesn't hand every worktree a fresh grace window. A stale key for a
-	// removed worktree is harmless: the engine only ever acts on worktrees it
-	// re-detects from disk.
+	// Restore persisted worktree and service countdowns too, so a restart doesn't
+	// hand each a fresh grace window (which would also wake a sleeping service).
+	// A stale key is harmless: the engine only acts on what it re-detects.
 	for key, ts := range saved {
-		if ts > 0 && strings.IndexByte(key, '/') >= 0 {
+		if ts > 0 && (strings.IndexByte(key, '/') >= 0 || strings.HasPrefix(key, svcKeyPrefix)) {
 			t.TouchSite(key, time.Unix(ts, 0))
 		}
 	}

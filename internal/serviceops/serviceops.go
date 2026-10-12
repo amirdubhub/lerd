@@ -22,6 +22,7 @@ import (
 	"github.com/geodro/lerd/internal/freeport"
 	"github.com/geodro/lerd/internal/imagepull"
 	"github.com/geodro/lerd/internal/imgledger"
+	"github.com/geodro/lerd/internal/platform"
 	"github.com/geodro/lerd/internal/podman"
 	"github.com/geodro/lerd/internal/registry"
 )
@@ -151,6 +152,12 @@ func firePublishedPortShiftForced(service string, newPort int) {
 // can decide it instead of inheriting whatever the developer happens to be running.
 var ensureUnitStatus = podman.UnitStatus
 
+// guardRecordedPorts re-tests a port a service is already recorded on, moving it
+// when something else took it while the service was down. Not on macOS: the VM
+// can hold a service's own port after it stops, so the test moved services off
+// their own ports and left sites behind. There a recorded port sticks.
+var guardRecordedPorts = !platform.Current.UsesMachineVM
+
 // unitActive reports whether a service's own systemd unit is currently up.
 func unitActive(name string) bool {
 	status, _ := ensureUnitStatus("lerd-" + name)
@@ -159,7 +166,7 @@ func unitActive(name string) bool {
 
 // ensureContainerRunning is the seam the port guard reads container state
 // through, so tests decide it instead of inheriting the live runtime.
-var ensureContainerRunning = podman.ContainerRunningQuiet
+var ensureContainerRunning = podman.ContainerRunningKnown
 
 // holdsItsPort reports whether a service is itself the owner of the port it
 // publishes, which is what stops the guard from treating its own listener as a
@@ -167,8 +174,16 @@ var ensureContainerRunning = podman.ContainerRunningQuiet
 // a unit that cannot bind is restarted by systemd and reads as "activating"
 // throughout, so the unit state alone would name a service that cannot start as
 // the owner of the port it cannot bind, and the guard would never move it.
+//
+// A podman that cannot be asked (the VM restarting or stalled) still forwards
+// the ports it held, so the bind test fails on the service's own port. Not
+// knowing is no evidence of a foreign owner, and guessing moved every service.
 func holdsItsPort(name string) bool {
-	return unitActive(name) && ensureContainerRunning("lerd-"+name)
+	running, known := ensureContainerRunning("lerd-" + name)
+	if !known {
+		return true
+	}
+	return unitActive(name) && running
 }
 
 // maybeShiftPublishedPort decides whether a service whose primary host port is
@@ -993,23 +1008,22 @@ func ensureCustomServiceQuadletDiff(svc *config.CustomService) (bool, error) {
 		pp = 0
 	}
 	shifted := false
-	// The guard tests the recorded published port when there is one and the preset
-	// default otherwise: a recorded port something else took while the service was
-	// down is no more bindable than a taken default, and starting on it fails.
 	primary := pp
 	if primary == 0 {
 		primary = podman.PrimaryHostPort(svc.Ports)
 	}
-	if free := maybeShiftPublishedPort(svc.Name, primary, holdsItsPort(svc.Name)); free > 0 {
-		if err := persistPublishedPort(svc.Name, free); err != nil {
-			return false, fmt.Errorf("shifting lerd-%s off in-use port %d: %w", svc.Name, primary, err)
+	if pp == 0 || guardRecordedPorts {
+		if free := maybeShiftPublishedPort(svc.Name, primary, holdsItsPort(svc.Name)); free > 0 {
+			if err := persistPublishedPort(svc.Name, free); err != nil {
+				return false, fmt.Errorf("shifting lerd-%s off in-use port %d: %w", svc.Name, primary, err)
+			}
+			pp = free // use the just-persisted value directly — no second config read to diverge
+			notePortShift(svc.Name, primary, free)
+			// Host-proxy sites reach this service over the published loopback port,
+			// so their .env must follow the shift. The CLI registers the refresh hook.
+			firePublishedPortShift(svc.Name, free)
+			shifted = true
 		}
-		pp = free // use the just-persisted value directly — no second config read to diverge
-		notePortShift(svc.Name, primary, free)
-		// Host-proxy sites reach this service over the published loopback port,
-		// so their .env must follow the shift. The CLI registers the refresh hook.
-		firePublishedPortShift(svc.Name, free)
-		shifted = true
 	}
 	// Apply the recorded published port (guard-shifted or set via `lerd service
 	// port`) to the primary host mapping and the connection URL, leaving the
@@ -1034,6 +1048,10 @@ func ensureCustomServiceQuadletDiff(svc *config.CustomService) (bool, error) {
 		}
 		host := podman.PrimaryHostPort([]string{spec})
 		if hport, ok := overrides[cport]; ok && hport > 0 {
+			if !guardRecordedPorts {
+				svc.Ports = podman.SetHostPortForContainerPort(svc.Ports, cport, hport)
+				continue
+			}
 			host = hport
 		}
 		if free := maybeShiftPublishedPort(svc.Name, host, holdsItsPort(svc.Name)); free > 0 && free != host {
@@ -1062,7 +1080,7 @@ func ensureCustomServiceQuadletDiff(svc *config.CustomService) (bool, error) {
 		svc.Ports = append(svc.Ports, extra...)
 	}
 	if svc.DataDir != "" {
-		if err := os.MkdirAll(config.DataSubDir(svc.Name), 0755); err != nil {
+		if err := config.EnsureServiceDataDir(svc.Name); err != nil {
 			return false, fmt.Errorf("creating data directory for %s: %w", svc.Name, err)
 		}
 	}
@@ -1120,6 +1138,9 @@ func EnsureServiceRunning(name string) error {
 	}
 	status, _ := podman.UnitStatus(unit)
 	if status == "active" {
+		// A running service is not paused, whatever started it; a stale pause
+		// would make the next lerd start skip it while a site still needs it.
+		_ = config.SetServicePaused(name, false)
 		if err := waitReadyFn(name, 30*time.Second); err != nil {
 			return fmt.Errorf("%s is active but not yet ready: %w", name, err)
 		}
@@ -1144,19 +1165,13 @@ func EnsureServiceRunning(name string) error {
 			return err
 		}
 	}
-	// Starting a unit whose image is absent lets podman pull it silently in the
-	// middle of the start, with no size and no way to opt out. Pull it here
-	// instead, so the download is announced first and offline mode sees it.
-	if img, _ := serviceImageRefs(name); img != "" && !podman.ImageExists(img) {
-		bytes, _ := imagepull.Size(img)
-		fmt.Printf("  Pulling %s%s for %s\n", img, imagepull.Note(bytes), name)
-		if err := podman.PullImageTo(img, os.Stdout); err != nil {
-			return err
-		}
+	if err := pullStartImage(name); err != nil {
+		return err
 	}
 	if err := startUnitRetry(unit); err != nil {
 		return err
 	}
+	_ = config.SetServicePaused(name, false)
 	return waitReadyFn(name, 60*time.Second)
 }
 
@@ -1232,6 +1247,9 @@ func stopWithDependents(name string, seen map[string]bool) error {
 	return firstErr
 }
 
+// DependentsOf is dependentsOf for callers outside the package.
+func DependentsOf(name string) []string { return dependentsOf(name) }
+
 // dependentsOf returns installed custom services for which name can satisfy
 // some depends_on entry (literal, family, or env_role), whether or not it is
 // the current ResolveDependency pick.
@@ -1278,7 +1296,7 @@ func ServiceFamily(name string) string { return config.FamilyOfName(name) }
 
 // waitReadyFn is podman.WaitReady; tests stub it so RefreshDiscoverFamilyConsumers
 // does not need a live engine.
-var waitReadyFn = podman.WaitReady
+var waitReadyFn = waitReadyFirstStart
 
 // RegenerateFamilyConsumersForService wraps RegenerateFamilyConsumers. When
 // name is up it waits until ready first so discover_family includes this
@@ -1481,7 +1499,9 @@ func dynamicEnvConsumers() []*config.CustomService {
 		installed[c.Name] = true
 	}
 	for _, name := range config.DefaultPresetNames() {
-		if installed[name] {
+		// A removed or never-installed default has no unit to refresh, and
+		// writing one installs it.
+		if installed[name] || config.ServiceIsRemoved(name) || !ServiceInstalled(name) {
 			continue
 		}
 		meta, err := config.DefaultPresetMeta(name)

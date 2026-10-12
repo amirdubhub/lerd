@@ -47,7 +47,7 @@ cd myapp
 lerd link
 ```
 
-`lerd link` registers `myapp` and assigns it `http://myapp.test` automatically. No `/etc/hosts` edits, DNS is handled by the lerd dnsmasq container.
+`lerd link` registers `myapp` and assigns it `http://myapp.test` automatically. No `/etc/hosts` edits, DNS is handled by lerd's built-in DNS server.
 
 ::: info Already parked?
 If `~/Lerd` was registered with `lerd park ~/Lerd` earlier, every subdirectory under it is auto-linked. You can skip `lerd link` entirely.
@@ -145,7 +145,7 @@ You should see `myapp` listed as `active`, the configured services running, and 
 
 | Command | What it did |
 |---|---|
-| `lerd link` | Registered `myapp.test` with nginx + dnsmasq |
+| `lerd link` | Registered `myapp.test` with nginx + lerd-dns |
 | `lerd init` | Wrote `.lerd.yaml` with PHP 8.5, Node 22, MySQL, Redis, Mailpit, queue, schedule |
 | `lerd env` (via setup) | Injected `DB_HOST=lerd-mysql`, `REDIS_HOST=lerd-redis`, `MAIL_HOST=lerd-mailpit` into `.env` |
 | `lerd db:create` (via env) | Created `myapp` and `myapp_testing` databases |

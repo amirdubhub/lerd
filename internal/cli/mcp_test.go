@@ -174,6 +174,35 @@ func TestMcpEnabledGlobally_detectsCursorRules(t *testing.T) {
 	}
 }
 
+func TestMCPGlobalConfigured_readsTheMarkersAlone(t *testing.T) {
+	home := t.TempDir()
+	if MCPGlobalConfigured(home) {
+		t.Errorf("expected false when no markers present")
+	}
+	rules := filepath.Join(home, ".cursor", "rules", "lerd.mdc")
+	if err := os.MkdirAll(filepath.Dir(rules), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(rules, []byte("x"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !MCPGlobalConfigured(home) {
+		t.Errorf("expected true once enable-global's marker exists")
+	}
+}
+
+func TestMCPGlobalConfigured_neverAsksClaude(t *testing.T) {
+	asked := false
+	prev := claudeMCP
+	claudeMCP = func(args ...string) ([]byte, error) { asked = true; return nil, nil }
+	t.Cleanup(func() { claudeMCP = prev })
+
+	MCPGlobalConfigured(t.TempDir())
+	if asked {
+		t.Error("the dashboard's check ran the claude CLI; it reads files only")
+	}
+}
+
 func TestWriteGlobalAISkills_replacesExistingLerdBlock(t *testing.T) {
 	home := t.TempDir()
 
@@ -630,7 +659,18 @@ func TestLerdReference_underSizeCeiling(t *testing.T) {
 	// by what composer.json declares; and a key .lerd.local.yaml owns cannot be
 	// set from here at all. Each one looks like a broken tool if it arrives
 	// unexplained. The site_doctor entry was compressed first.
-	const ceiling = 36500
+	//
+	// 36500 → 36850 for browser logs: the loop that reads a page's own
+	// JavaScript errors, and that an empty result means nothing while it is off,
+	// then 36850 → 37000 for the presets that add a frontend library's events,
+	// then 37000 → 37450 for the request tool, which reads one request's lenses
+	// by the id its recent row carries, then 37450 → 37600 for dumps_buffer,
+	// which makes room when a request left the buffer before it was read.
+	//
+	// 37600 → 38150 for what 1.37 leaves an assistant to misread: secrets an
+	// env_provider keeps out of .env on purpose, a sleeping service that wakes
+	// on its own, and front_controller in place of a hand-written override.
+	const ceiling = 38150
 	if got := len(lerdReference); got > ceiling {
 		t.Errorf("lerd-reference.md is %d bytes, ceiling is %d — trim before raising", got, ceiling)
 	}
@@ -639,5 +679,13 @@ func TestLerdReference_underSizeCeiling(t *testing.T) {
 func TestSkillDescription_mentionsWorktrees(t *testing.T) {
 	if !strings.Contains(skillDescription, "worktree") {
 		t.Error("skill description should name worktrees so worktree requests load the skill")
+	}
+}
+
+func TestSkillDescription_mentionsBrowserErrors(t *testing.T) {
+	for name, d := range map[string]string{"skill": skillDescription, "cursor": cursorDescription} {
+		if !strings.Contains(d, "JavaScript errors") || !strings.Contains(d, "console warnings") {
+			t.Errorf("%s description should name JavaScript errors and console warnings so a broken page loads the skill", name)
+		}
 	}
 }

@@ -70,6 +70,9 @@ type Server struct {
 	// keepTests records events from PHPUnit/Pest runs. Off by default: one
 	// suite fills the whole ring and pushes out everything else.
 	keepTests atomic.Bool
+	// siteName maps the site an event names to the registered one, since a
+	// CLI run without LERD_SITE names its working folder instead.
+	siteName atomic.Pointer[func(string) string]
 }
 
 // Listen binds a TCP listener on addr and starts the accept loop. If addr
@@ -88,6 +91,12 @@ func Listen(ctx context.Context, addr string) (*Server, error) {
 // or "unix"; for "unix", any pre-existing socket at addr is removed first
 // so a previous lerd-ui crash doesn't pin the path forever.
 func ListenOn(ctx context.Context, network, addr string) (*Server, error) {
+	return ListenWithRing(ctx, network, addr, NewRing(0))
+}
+
+// ListenWithRing is ListenOn buffering into ring, such as one OpenRing keeps
+// on disk so the buffer survives a restart.
+func ListenWithRing(ctx context.Context, network, addr string, ring *Ring) (*Server, error) {
 	if network == "" {
 		network = DefaultNetwork
 	}
@@ -112,7 +121,7 @@ func ListenOn(ctx context.Context, network, addr string) (*Server, error) {
 	}
 	s := &Server{
 		addr:   ln.Addr().String(),
-		ring:   NewRing(0),
+		ring:   ring,
 		hub:    NewHub(),
 		ln:     ln,
 		closed: make(chan struct{}),
@@ -139,14 +148,62 @@ func (s *Server) Snapshot() []Event { return s.ring.Snapshot() }
 // Filter returns a filtered Snapshot.
 func (s *Server) Filter(opts FilterOpts) []Event { return s.ring.Filter(opts) }
 
+// Counts, TestCount, Groups, GroupRows, Sites and Workers are the Debug
+// lenses' queries; see the Ring methods of the same names.
+func (s *Server) Counts(opts FilterOpts) map[string]int { return s.ring.Counts(opts) }
+func (s *Server) TestCount(opts FilterOpts) int         { return s.ring.TestCount(opts) }
+func (s *Server) Groups(opts GroupOpts) GroupPage       { return s.ring.Groups(opts) }
+func (s *Server) GroupRows(opts GroupOpts, key string, before int64) []Row {
+	return s.ring.GroupRows(opts, key, before)
+}
+func (s *Server) Sites() []string                         { return s.ring.Sites() }
+func (s *Server) Workers(opts FilterOpts) []string        { return s.ring.Workers(opts) }
+func (s *Server) FacetValues(opts FilterOpts) []string    { return s.ring.FacetValues(opts) }
+func (s *Server) Event(id string) (json.RawMessage, bool) { return s.ring.Event(id) }
+
+// FilterJSON is Filter as the JSON array the API serves.
+func (s *Server) FilterJSON(opts FilterOpts) []byte { return s.ring.FilterJSON(opts) }
+
 // Subscribe returns a buffered channel of new events plus an unsubscribe func.
 func (s *Server) Subscribe() (<-chan Event, func()) { return s.hub.Subscribe() }
 
 // Clear empties the ring. Active subscribers continue to receive events.
 func (s *Server) Clear() { s.ring.Clear() }
 
+// ClearKind drops the buffered events of one kind and keeps the rest.
+func (s *Server) ClearKind(kind string) { s.ring.Remove(func(e Event) bool { return e.Kind == kind }) }
+
 // Len returns the number of buffered events.
 func (s *Server) Len() int { return s.ring.Len() }
+
+// Cap returns how many events the server keeps, and Resize changes it.
+func (s *Server) Cap() int            { return s.ring.Cap() }
+func (s *Server) Resize(capacity int) { s.ring.Resize(capacity) }
+
+// Import takes in the buffer an older lerd-ui saved as JSON at path.
+func (s *Server) Import(path string) error { return s.ring.Import(path) }
+
+// ForgetRequests drops every buffered event of the given requests, as their
+// history is removed from request timing.
+func (s *Server) ForgetRequests(rids []string) {
+	if len(rids) == 0 {
+		return
+	}
+	s.ring.Remove(func(e Event) bool {
+		for _, rid := range rids {
+			if e.OfRequest(rid) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// SetKeep names the requests whose events outlive the buffer.
+func (s *Server) SetKeep(keep map[string]bool) { s.ring.SetKeep(keep) }
+
+// RequestIDs is the set of requests with captured events still buffered.
+func (s *Server) RequestIDs() map[string]bool { return s.ring.RequestIDs() }
 
 // Subscribers returns the current subscriber count.
 func (s *Server) Subscribers() int { return s.hub.Count() }
@@ -168,9 +225,16 @@ func (s *Server) record(e Event) {
 	if !e.Valid() || (e.Ctx.Test && !s.keepTests.Load()) {
 		return
 	}
+	if fn := s.siteName.Load(); fn != nil {
+		e.Ctx.Site = (*fn)(e.Ctx.Site)
+	}
 	s.ring.Append(e)
 	s.hub.Publish(e)
 }
+
+// SetSiteResolver sets how an incoming event's site name is mapped to the
+// registered site before the event is stored.
+func (s *Server) SetSiteResolver(fn func(string) string) { s.siteName.Store(&fn) }
 
 func (s *Server) acceptLoop() {
 	defer s.wg.Done()

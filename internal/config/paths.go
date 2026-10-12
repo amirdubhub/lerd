@@ -3,9 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/geodro/lerd/internal/platform"
 )
 
 // DumpsTCPPort is the loopback port the dump receiver binds on darwin
@@ -194,20 +195,6 @@ func SystemdUserDir() string {
 	return filepath.Join(xdgConfigHome(), "systemd", "user")
 }
 
-// LaunchAgentsDir returns the directory macOS keeps lerd's launchd units in,
-// empty on Linux, whose unit dirs follow the XDG vars instead. This one follows
-// HOME, which is why isolating only the XDG vars leaves it exposed.
-func LaunchAgentsDir() string {
-	if runtime.GOOS != "darwin" {
-		return ""
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, "Library", "LaunchAgents")
-}
-
 // PHPImageHashFile returns the path to the stored PHP-FPM Containerfile hash.
 // InstalledVersionFile records the lerd version whose `lerd install` last ran,
 // so a binary replaced by a package manager can be told from one this install
@@ -292,6 +279,19 @@ func DumpsIniFile() string {
 	return filepath.Join(DumpsAssetsDir(), "97-lerd-dump.ini")
 }
 
+// ProvidedEnvContainerDir is where ProvidedEnvDir is mounted in FPM containers.
+const ProvidedEnvContainerDir = "/run/lerd/env"
+
+// ProvidedEnvFile is the provided-env file for a site, named after the site
+// because that is the LERD_SITE value nginx and the exec paths hand PHP.
+func ProvidedEnvFile(siteName string) string {
+	dir := ProvidedEnvDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, siteName+".env")
+}
+
 // DevtoolsCollectorFile is the host path for the framework-neutral collector
 // (agnostic mail and other shared-library capture), loaded lazily by the
 // lerd_devtools extension. Lives in the dumps assets dir (mounted at
@@ -320,6 +320,18 @@ func LaravelAdapterFile() string {
 // volume in every FPM container surfaces it at the same path inside.
 func DumpsSocketPath() string {
 	return filepath.Join(RunDir(), "lerd-dumps.sock")
+}
+
+// DumpsBufferFile is where lerd-ui before 1.37 saved its debug buffer on
+// shutdown; a newer one imports it once into DebugEventsDB and deletes it.
+func DumpsBufferFile() string {
+	return filepath.Join(DataDir(), "dumps-buffer.json")
+}
+
+// DebugEventsDB holds the debug buffer, on disk so lerd-ui keeps no events in
+// memory and a restart keeps what Inspect can open.
+func DebugEventsDB() string {
+	return filepath.Join(DataDir(), "debug-events.db")
 }
 
 // DumpsEnabledFlagFile is the sentinel the debug bridge checks on every
@@ -368,7 +380,7 @@ func SpxWebUIDir() string {
 // host.containers.internal:7073 fallback). On Linux the unix socket is
 // reachable inside FPM via the %h:%h bind mount.
 func DumpsListenNetwork() string {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return "tcp"
 	}
 	return "unix"
@@ -376,7 +388,7 @@ func DumpsListenNetwork() string {
 
 // DumpsListenAddr is the address paired with DumpsListenNetwork.
 func DumpsListenAddr() string {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return "127.0.0.1:" + DumpsTCPPort
 	}
 	return DumpsSocketPath()
@@ -388,7 +400,7 @@ func DumpsListenAddr() string {
 // the lerd-ui process on the host; on Linux the FPM container hits the
 // host unix socket directly via the %h:%h bind mount.
 func DumpsBridgeTarget() string {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return "tcp://host.containers.internal:" + DumpsTCPPort
 	}
 	return "unix://" + DumpsSocketPath()
@@ -568,7 +580,7 @@ func UISocketPath() string {
 // Mirrors the DumpsListenNetwork/Addr split. The port matches lerd-ui's fixed
 // listen port (internal/ui/server.go listenAddr).
 func UIClientNetwork() string {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return "tcp"
 	}
 	return "unix"
@@ -576,7 +588,7 @@ func UIClientNetwork() string {
 
 // UIClientAddr is the address paired with UIClientNetwork.
 func UIClientAddr() string {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return "127.0.0.1:7073"
 	}
 	return UISocketPath()
@@ -628,7 +640,7 @@ func AccessFeedListenAddr() string {
 // bind-mounted unix socket on Linux, or host.containers.internal over gvproxy
 // UDP on macOS where nginx lives in the VM and the host socket isn't reachable.
 func AccessLogTarget() string {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return "host.containers.internal:" + AccessFeedUDPPort
 	}
 	return "unix:" + AccessSocketPath()

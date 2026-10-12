@@ -207,6 +207,21 @@ func TestLoadPreset_Typesense(t *testing.T) {
 	}
 }
 
+// Mailpit warns on every start about MP_DATA_FILE; MP_DATABASE replaces it and
+// has to keep the same file, or existing mail is left behind.
+func TestLoadPreset_MailpitDatabaseEnv(t *testing.T) {
+	p, err := LoadPreset("mailpit")
+	if err != nil {
+		t.Fatalf("LoadPreset(mailpit) error = %v", err)
+	}
+	if _, ok := p.Environment["MP_DATA_FILE"]; ok {
+		t.Error("mailpit still sets the deprecated MP_DATA_FILE")
+	}
+	if got := p.Environment["MP_DATABASE"]; got != "/data/mailpit.db" {
+		t.Errorf("MP_DATABASE = %q, want /data/mailpit.db", got)
+	}
+}
+
 func TestLoadPreset_TypesenseDashboard(t *testing.T) {
 	p, err := LoadPreset("typesense-dashboard")
 	if err != nil {
@@ -1748,4 +1763,32 @@ func TestPresetMeta_CarriesAdminRank(t *testing.T) {
 	if svc.AdminRank != 10 {
 		t.Errorf("resolved service AdminRank = %d, want 10", svc.AdminRank)
 	}
+}
+
+// suggest_for names the services whose page should offer this preset, which is
+// how a scoring backend reaches Mailpit's page without being its admin UI.
+func TestPresetMeta_CarriesSuggestFor(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dir)
+	presets := filepath.Join(dir, "lerd", "service-presets")
+	if err := os.MkdirAll(presets, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "name: spamassassin\nimage: x\nsuggest_for:\n  - mailpit\n"
+	if err := os.WriteFile(filepath.Join(presets, "spamassassin.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	metas, err := ListPresets()
+	if err != nil {
+		t.Fatalf("ListPresets: %v", err)
+	}
+	for _, m := range metas {
+		if m.Name == "spamassassin" {
+			if len(m.SuggestFor) != 1 || m.SuggestFor[0] != "mailpit" {
+				t.Errorf("SuggestFor = %v, want [mailpit]", m.SuggestFor)
+			}
+			return
+		}
+	}
+	t.Fatal("spamassassin missing from ListPresets")
 }

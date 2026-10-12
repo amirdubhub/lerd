@@ -15,6 +15,10 @@ It checks the machine, not your projects. A site's own findings, a missing datab
 lerd site:doctor acme.test
 ```
 
+On Ubuntu or Debian with a native MySQL or MariaDB server installed, `lerd doctor` fails while that server's AppArmor profile is enforced. Rootless podman applies no profile of its own, so the host's attaches to the server in lerd's database container too: it stops reading its config, listens on a socket its own client does not look at, so `lerd db:shell` cannot connect, and refuses the signal that stops it. Disabling that profile, or purging the native server if lerd's replaces it, and restarting the service clears it. `lerd install` warns about the same profile.
+
+Among the machine checks, `lerd doctor` fails when a PHP container still mounts a folder that no longer exists. Podman refuses to start a container whose mount source is gone, so every site on that PHP version answers 502 until `lerd start` rewrites the container without it.
+
 `lerd site:doctor` also validates the project's `.lerd.yaml`, which is what `lerd check` used to do on its own; `check` still works as a deprecated alias for it.
 
 ## Repairing findings automatically
@@ -96,14 +100,14 @@ Remove the marker when you are done. While it exists, anyone who can reach the m
 ---
 
 ::: details `.test` domains not resolving
-First, confirm DNS is actually meant to be managed by lerd. If `lerd dns:check` reports `DNS managed externally`, you opted out of dnsmasq during install and your sites should be on `*.localhost` rather than `*.test`. See [DNS](features/dns.md) for switching modes.
+First, confirm DNS is actually meant to be managed by lerd. If `lerd dns:check` reports `DNS managed externally`, you opted out of lerd-managed DNS during install and your sites should be on `*.localhost` rather than `*.test`. See [DNS](features/dns.md) for switching modes.
 
 Otherwise, the fastest way to find the broken rung is `lerd doctor`. The DNS section walks the chain top to bottom and surfaces exactly where it breaks, with a hint per failure:
 
 ```
 [DNS]
   DNS TLD (.test)                     OK
-    lerd-dns container                running
+    lerd-dns                          running
     dnsmasq config                    address=/.test/127.0.0.1, port=5300
     port 5300 listening               127.0.0.1:5300
     dig @127.0.0.1 -p 5300            127.0.0.1
@@ -116,10 +120,10 @@ The chain in order:
 
 | Rung | What it checks | If it fails |
 |---|---|---|
-| `lerd-dns container` | The dnsmasq container is running. | `lerd start` (or `podman logs lerd-dns` to see why it crashed). |
+| `lerd-dns` | The lerd-dns service is running. | `lerd start` (or `journalctl --user -u lerd-dns` on Linux, `~/Library/Logs/lerd/lerd-dns.log` on macOS, to see why it stopped). |
 | `dnsmasq config` | `~/.local/share/lerd/dnsmasq/lerd.conf` exists with `port=5300` and `address=/.<tld>/`. | `lerd start` regenerates the config from your registered TLD. |
 | `port 5300 listening` | TCP/UDP 5300 is reachable on 127.0.0.1. | Another process owns the port. Find it with `ss -tlnp sport = :5300` on Linux, or `lsof -nP -iTCP:5300 -sTCP:LISTEN` on macOS. |
-| `dig @127.0.0.1 -p 5300` | A direct query at port 5300 returns 127.0.0.1 for `lerd-probe.<tld>`, or the host's LAN IP when [`lan:expose`](usage/lan-sharing.md) is on. | dnsmasq is up but its config drifted. `lerd dns:repair`. |
+| `dig @127.0.0.1 -p 5300` | A direct query at port 5300 returns 127.0.0.1 for `lerd-probe.<tld>`, or the host's LAN IP when [`lan:expose`](usage/lan-sharing.md) is on. | lerd-dns is up but its config drifted. `lerd dns:repair`. |
 | `resolver hookup` | The NetworkManager dispatcher script or systemd-resolved drop-in is installed. | Rerun `lerd install`. |
 | `interface routes .test to 5300` | `resolvectl status` shows `127.0.0.1:5300` and `~<tld>` on the active interface. | `sudo systemctl restart NetworkManager`, or set the routing manually with `sudo resolvectl domain <iface> ~test ~.`. |
 | `system DNS lookup` | `host lerd-probe.test` (the system resolver) returns 127.0.0.1, or the host's LAN IP under `lan:expose`. | The drop-in is installed but resolved isn't honouring it. Check whether cloud-init or another tool wrote a higher-priority resolver config. Common on EC2 / cloud images. With a VPN connected this rung is reported as a warning rather than a failure, see the VPN section below. |
@@ -138,7 +142,7 @@ On systemd-resolved systems, `.test` used to reach lerd-dns only through a route
 
 Lerd now keeps an always-up dummy interface, `lerd0`, that carries the `~test` route. Because that link never goes down, systemd-resolved keeps forwarding `.test` to lerd-dns with no network connection at all. It is created by a small system service, `lerd-dns-link.service`, which starts on every boot, so the fix survives reboots and applies automatically on your next `lerd start`, nothing to run by hand. This applies to both systemd-resolved setups: with NetworkManager (Ubuntu, Fedora, CachyOS) and without it (Arch, omarchy).
 
-If you also saw a stall of up to twenty seconds on `.test` while offline, that was an AAAA (IPv6) lookup. lerd's dnsmasq config answers both `address=/.test/127.0.0.1` and `address=/.test/::1`, but the NetworkManager dispatcher used to regenerate that file from a v4-only template whenever an interface came up, dropping the AAAA record. dnsmasq then forwarded `.test` AAAA queries to your upstream, which times out once that upstream is unreachable. The dispatcher now leaves the address records alone, so AAAA is answered locally and returns instantly.
+If you also saw a stall of up to twenty seconds on `.test` while offline, that was an AAAA (IPv6) lookup. lerd's DNS config answers both `address=/.test/127.0.0.1` and `address=/.test/::1`, but the NetworkManager dispatcher used to regenerate that file from a v4-only template whenever an interface came up, dropping the AAAA record. dnsmasq then forwarded `.test` AAAA queries to your upstream, which times out once that upstream is unreachable. The dispatcher now leaves the address records alone, so AAAA is answered locally and returns instantly.
 :::
 
 ::: details What is the `lerd0` network interface?
@@ -169,14 +173,6 @@ hosts: mymachines mdns_minimal [NOTFOUND=return] files myhostname dns resolve
 ```
 
 This makes glibc consult the plain `dns` module before systemd-resolved's `nss-resolve`, which the VPN client no longer shadows.
-:::
-
-::: details `lerd install` fails at "Building dnsmasq" with "unable to select packages"
-The dnsmasq image is the one thing lerd builds rather than pulls, and the `apk add` inside that build resolves names from the build's own network namespace, not through the host resolver that just pulled the base image. When that namespace has no working resolver, the build fails with `WARNING: fetching https://dl-cdn.alpinelinux.org/...: DNS: transient error` followed by `ERROR: unable to select packages`, even though every pull before it succeeded.
-
-lerd retries the build with your host's real upstream nameservers pinned, which covers the common case of a stub resolver (`127.0.0.53`) that podman's default handling does not translate correctly on your setup. When that still resolves nothing, it builds once more on the host network, which is the namespace that pulled the base image a moment earlier and so is known to work. A rootless build cannot join the lerd network, so those two are the levers available.
-
-If every attempt fails, lerd says so at the end of the install rather than reporting a clean finish: without the image, lerd-dns cannot start and no `.test` name resolves. Check what the container network can reach with `lerd doctor`, in particular the `internet DNS from containers` line, fix it, then run `lerd install` again.
 :::
 
 ::: details `php artisan` fails with "could not translate host name lerd-postgres" while the site works in the browser
@@ -225,14 +221,16 @@ podman network inspect lerd --format '{{.NetworkDNSServers}}'
 ```
 
 An address that is valid on the host but not routable from a rootless network namespace is the usual cause. This is worth checking on WSL2 in particular, where the Windows-side resolver address the WSL VM is given is not always reachable from inside the namespace.
+
+The other cause is a boot where lerd's containers started before the host network was really up. NetworkManager can report the network online while only a link-down bridge such as Docker's `docker0` has an address, and pasta then builds podman's rootless network on that bridge, with no route out, and never revisits it. Doctor reports this as `container network route`, and `lerd start` detects it and rebuilds the network by restarting the lerd containers. If a container outside lerd is still on a podman bridge network, the old network survives the restart and `lerd start` says so; stop that container and run `lerd start` again.
 :::
 
 ::: details "Secure Connection Failed" after the host wakes from suspend or hibernate
-After a long suspend or hibernate, rootless podman networking can come back in a bad state: the lerd-nginx container loses its host port forward (or stops), so nothing listens on 443 and the browser shows a generic "Secure Connection Failed" for your `.test` sites, or the lerd-dns container stops and names no longer resolve.
+After a long suspend or hibernate, rootless podman networking can come back in a bad state: the lerd-nginx container loses its host port forward (or stops), so nothing listens on 443 and the browser shows a generic "Secure Connection Failed" for your `.test` sites, or lerd-dns stops and names no longer resolve.
 
 On Linux the watcher now restarts nginx automatically. It notices the host has resumed from a real wall-clock gap in its tick loop (the timer is frozen while the machine is suspended), and on that one tick it checks whether lerd-nginx is accepting on its HTTPS port and restarts it if the listener died. Keying off the resume event rather than a continuous poll means it acts exactly once and can never fight a `lerd start` you ran yourself, since a start does not suspend the machine. DNS resolution is repaired by the same watcher's existing path, so `.test` names come back on their own too.
 
-A stopped lerd-dns is healed too. Whenever the watcher finds `.test` broken it now asks lerd's dnsmasq directly on port 5300 whether it is alive, and restarts the container when it is not, instead of only rewriting the host resolver config, which can never bring back a container that is gone. Waking is not the only way to lose it: the NetworkManager dispatcher restarts lerd-dns on every interface change, and a wake that brings wifi, ethernet and a VPN back at once used to fire enough restarts in a few seconds to exhaust systemd's start rate limit, which parks the unit in `failed` permanently. That limit is now lifted for lerd-dns, and the watcher clears any leftover failed state before it restarts.
+A stopped lerd-dns is healed too. Whenever the watcher finds `.test` broken it now asks lerd-dns directly on port 5300 whether it is alive, and restarts it when it is not, instead of only rewriting the host resolver config, which can never bring back a server that is gone. Waking is not the only way to lose it: the NetworkManager dispatcher restarts lerd-dns on every interface change, and a wake that brings wifi, ethernet and a VPN back at once used to fire enough restarts in a few seconds to exhaust systemd's start rate limit, which parks the unit in `failed` permanently. That limit is now lifted for lerd-dns, and the watcher clears any leftover failed state before it restarts.
 
 One case it still leaves for `lerd start` rather than acting from a background timer: a host whose IPv6 support changed across the wake, since the lerd network must be recreated and that rebuilds every container. The same applies in the rare case the watcher itself was not running at the moment of resume.
 :::

@@ -7,6 +7,7 @@
   import { autoSnapshot, loadAutoSnapshot } from '$stores/autoSnapshot';
   import ListGroupHeader from '$components/ListGroupHeader.svelte';
   import StatusDot from '$components/StatusDot.svelte';
+  import ServiceStatusDot from '$components/ServiceStatusDot.svelte';
   import LoadingRow from '$components/LoadingRow.svelte';
   import { accessMode } from '$stores/accessMode';
   import { routeRest, goToTab } from '$stores/route';
@@ -62,6 +63,7 @@
         <span
           class="shrink-0 {autoSnapshotOn ? 'text-emerald-600 dark:text-emerald-500' : 'text-gray-300 dark:text-gray-600'}"
           title={autoSnapshotOn ? m.snapshots_auto_railOn() : m.snapshots_auto_railOff()}
+          role="img"
           aria-label={autoSnapshotOn ? m.snapshots_auto_railOn() : m.snapshots_auto_railOff()}
         >
           <Icon name="clock" class="w-3 h-3" />
@@ -73,7 +75,7 @@
         trailing={group.key === 'databases' ? snapshotMark : undefined}
       />
       {#each group.items as svc (svc.name)}
-        {#snippet leading()}<StatusDot color={svc.status === 'active' ? 'green' : 'gray'} />{/snippet}
+        {#snippet leading()}<ServiceStatusDot {svc} />{/snippet}
         {#snippet trailing()}
           {#if svc.status !== 'active' && svc.port_conflicts && svc.port_conflicts.length > 0}
             <span
@@ -98,7 +100,7 @@
           {/if}
           {#if svc.client_shims && svc.client_shims.some((s) => s.enabled)}
             <span
-              class="shrink-0 text-gray-400 dark:text-gray-500"
+              class="shrink-0 text-gray-500 dark:text-gray-400"
               title={m.services_shimsInstalled() + ': ' + svc.client_shims.filter((s) => s.enabled).map((s) => s.tool).join(', ')}
             >
               <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -114,7 +116,7 @@
         <ListRow active={selected === svc.name} onclick={() => select(svc.name)} {leading} {trailing}>
           {serviceLabel(svc.name)}
           {#if svc.version}
-            <span class="ml-1 text-[10px] font-normal tabular-nums text-gray-400 dark:text-gray-500">{svc.version}</span>
+            <span class="ml-1 text-[10px] font-normal tabular-nums text-gray-500 dark:text-gray-400">{svc.version}</span>
           {/if}
           {#if svc.update_available}
             <span

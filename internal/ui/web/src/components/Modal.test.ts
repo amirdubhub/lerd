@@ -34,6 +34,11 @@ describe('Modal', () => {
     expect(screen.getByTestId('footer')).toBeInTheDocument();
   });
 
+  it('renders header actions beside the title when provided', () => {
+    render(Harness, { props: { open: true, title: 'X', onclose: () => {}, withActions: true } });
+    expect(screen.getByText('X').parentElement?.contains(screen.getByTestId('actions'))).toBe(true);
+  });
+
   it('applies the xl width class for the large editor modal', () => {
     const { container } = render(Harness, {
       props: { open: true, title: 'X', onclose: () => {}, size: 'xl' }
@@ -65,5 +70,22 @@ describe('Modal', () => {
     const { container } = render(Harness, { props: { open: true, title: 'X', onclose: () => {} } });
     const close = container.querySelector('h3 + button') as HTMLElement;
     expect(close.className).toContain('shrink-0');
+  });
+
+  it('is announced as a dialog named by its title', () => {
+    render(Harness, { props: { open: true, title: 'Manage domains', onclose: () => {} } });
+    const panel = screen.getByRole('dialog', { name: 'Manage domains' });
+    expect(panel).toHaveAttribute('aria-modal', 'true');
+  });
+
+  it('takes focus on open and hands it back on close', async () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const { rerender } = render(Harness, { props: { open: true, title: 'X', onclose: () => {} } });
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
+    await rerender({ open: false, title: 'X', onclose: () => {} });
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
   });
 });

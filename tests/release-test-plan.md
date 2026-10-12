@@ -9,6 +9,80 @@ CI and `/lerd-preflight` cover the code. This plan covers the parts only a real
 machine can tell you about: the host installer, sudo bootstrap, systemd units,
 DNS resolvers, podman networking, and the browser.
 
+The phases that run over ssh have scripts in `tests/vm/`: `tests/vm/vm.sh run
+<guest> <phase|all>` runs them on a guest and prints one PASS or FAIL line per
+check, with the full output in `tests/vm/logs/`. Phase 10 (browser, tray) and
+phase 14 (macOS) stay by hand. See `tests/vm/guests.example` to describe your
+own machines; the scripts need no particular VM.
+
+---
+
+## Execution rules
+
+These bind whoever runs the plan, a person or an agent, and whoever writes the
+prompt that hands a lane to an agent. Nobody runs a plan of their own making.
+
+1. **Every checkbox in a lane's phases is executed, in order, as written,**
+   unless the tier rules below allow it to be carried. No
+   scoping a phase down ("the basics", "one database", "where practical"), no
+   substituting an easier check, no merging two items into one. A lane prompt
+   names the lane, the guest and the phases, and nothing that narrows them.
+2. **The only allowed skips are the ones this plan names:** a guest that cannot
+   reach the item (the matrix and guest notes say which), a platform the item is
+   not for, and the surfaces listed under "What this matrix cannot reach". Disk,
+   time, turn limits, rate limits and "not driveable over ssh" are blockers, not
+   skips: stop, fix the environment or report the blocker, and finish the item.
+   An image item run in phase 0's images step is recorded in the lane as `SKIP
+   covered in phase 0` with that step's result, not rerun.
+3. **Every checkbox gets a line in the lane's results**, carrying the item's
+   text word for word, then `PASS`, `FAIL` or `SKIP`, then the evidence (the
+   command and the real output or HTTP code) or the named reason for the skip.
+   A lane whose results have fewer lines than its phases have checkboxes is not
+   done, whatever else it reports.
+4. **Findings are reported FAILs first.** A lane summary opens with its FAIL and
+   SKIP counts. "Every site answered 200" is never the headline.
+5. **"Fixed" means the whole lane was rerun on the affected guests**, not only
+   the finding's repro. A fix touching shared code (paths, mounts, unit naming,
+   env wiring) reruns every lane that exercises that code.
+6. **The results are compared with the previous run's**, item by item. An item
+   that ran last time and did not run this time is a FAIL of the run, not a
+   difference to note. A `CARRIED` item (see tiers below) counts as run.
+
+---
+
+## Tiers: what runs every time and what can be carried
+
+Items are ordered by how likely a user is to hit them, and a run spends its time
+where people live. The first install, the upgrade and the first sites are what
+decides whether someone stays with lerd, so they are never carried.
+
+**Tier 1, every run, never carried.** Phase 1 (except the IPv6-off pass, the
+network-down pull and the macOS splash), phase 2, phase 9's detection, console
+and first 200 on the second framework, phase 12, and phase 13's uninstall,
+keep-data reinstall and 200 on a re-linked project. From the phases below them:
+phase 5's first-use start, `lerd env` wiring, `db:create`, migrations and the
+200 on a database route; phase 6's `queue:start`/`schedule:start`, `worker
+list` and self-heal; phase 7's `lerd worktree add`, its 200, bare-git add and
+`lerd worktree remove`.
+
+**Tier 2, run when their code changed.** Everything not named in tier 1 or tier
+3. Before a run, `git diff --stat <last-passing-commit> <candidate>` decides:
+an item whose phase touches a changed package (for example `internal/dns`,
+`internal/nginx` or `internal/certs` for phase 3, `internal/serviceops` for
+phase 5, `internal/ui` for phase 10) runs; when the diff leaves its packages
+alone it may be recorded as `CARRIED <commit>`, naming the candidate it last
+passed on, with that run's evidence. When in doubt it runs. Nothing is carried
+across more than one minor release.
+
+**Tier 3, once per release.** The IPv6-off pass, the network-down pull, the
+legacy 7.4 and prerelease 8.6 items, the late-NIC network rig, the reboot items,
+`lerd uninstall --force` on a second guest, and phase 14. They run on the first
+candidate of a release and are carried to its later candidates unless their
+code changed.
+
+A lane's ledger still carries one line per checkbox: `PASS`, `FAIL`, `SKIP` or
+`CARRIED <commit>`, so a carried item is visible and its age is known.
+
 ---
 
 ## The 200 rule
@@ -108,6 +182,20 @@ phases once the next release makes it ordinary.
 | Initialize git on a site without a repository | 10 |
 | Animations paused while the dashboard is unfocused | 10 |
 | A reinstall keeping the preset it reads | 5 |
+| A removed service staying removed, orphaned containers offered for removal | 5 |
+| Removing a service from a site on its Overview, suggested services faded | 2, 10 |
+| LAN share links and form posts on a secured Inertia site | 8 |
+| Worktree envs following their site's port and runtime changes | 7 |
+| The AI assistants switch on the System page | 10 |
+| Keyboard and screen reader use, the installed app's title | 10 |
+| Omarchy light themes, per-theme tones, the embedded frame's background | 10 |
+| Embedded dashboards opening in the dashboard's language | 10 |
+| Dashboard chrome following window focus on Plasma | 10 |
+| A service stop logged once, no log stream for a stopped service | 10 |
+| Composer's own home used for a global auth.json | 11 |
+| Node versions read from mise files, `lerd worktree setup`, empty manifests settling | 7, 10 |
+| Native capture seams, rebuilt native builds, no shared FPM containers on native | 14 |
+| Idle-suspend putting services to sleep, waking them per request | 6 |
 | Doctor explaining repeated macOS folder prompts, Xdebug across a runtime switch | 14 |
 
 ---
@@ -122,11 +210,44 @@ virsh -c qemu:///system snapshot-create-as ubuntu26.04 clean-no-lerd
 ```
 
 Then install the **previous stable** release, create a site, and snapshot again
-as `n-minus-1-with-site`. Lane B restores that one; every other lane restores
-`clean-no-lerd`.
+as `n-minus-1-with-site`. Lane B restores that one.
+
+### Images first, once per candidate
+
+Pulling and building images is most of a lane's wall time, and the candidate's
+images do not change between lanes. So they are made and checked once, up
+front, and every lane after that runs against the cache:
+
+1. On each guest, from `clean-no-lerd`, add a `mirror.gcr.io` registry mirror
+   for docker.io (every guest shares the host's NAT address, and Docker Hub
+   rate-limits it mid-run otherwise).
+2. Install the candidate, then pull or build every image the lanes use: each
+   PHP version the plan names (8.3 to 8.6, 7.4), FrankenPHP, and every service
+   preset phase 5 touches. Warm composer's and npm's caches by scaffolding one
+   Laravel and one Symfony project and deleting them.
+3. Run the image checkboxes here, where a download really happens: phase 1's
+   download disclosure, `--no-pull`, `LERD_OFFLINE` and network-down items,
+   phase 4's `php:rebuild`, `fetch`, legacy and prerelease items, and phase 5's
+   pull disclosure items. They are not repeated in the lanes.
+4. `lerd uninstall`, keeping podman's image store, and snapshot the guest as
+   `images-cached`. Every lane except B restores `images-cached`, so its fresh
+   install finds the images already there and spends no time pulling.
+
+Rebuild the `images-cached` snapshots whenever the candidate changes anything
+under `internal/podman/` that affects an image (a Containerfile, a pinned
+tool, an image tag); otherwise a new candidate reuses them.
+
+### Running the lanes
+
+Run lanes in parallel, up to the host's guest limit, one runner per lane.
+Split a lane at a phase boundary when it would outlast one runner (lane A at
+phase 6). Keep every reboot item to the end of its phase so a phase reboots
+once.
 
 - [ ] `clean-no-lerd` snapshot exists on each guest in the matrix
 - [ ] `n-minus-1-with-site` snapshot exists on the lane B guest
+- [ ] `images-cached` snapshot exists on each guest, taken from the current
+      candidate or from one whose images are unchanged
 
 ---
 
@@ -225,6 +346,8 @@ lerd setup --all --skip-open
 A `.lerd.yaml` is committed, so the answers that belong to this machine alone
 live beside it and have to win without ever being written back to the repo:
 
+- [ ] A suggested service's card is drawn dashed and faded until hovered, so it
+      does not read as one the site already uses
 - [ ] A key set in `.lerd.local.yaml` overrides the same key in `.lerd.yaml`,
       and a save from any command keeps the local key out of the committed file
 - [ ] A PHP or Node version pinned only in the local file is the one the link
@@ -324,8 +447,9 @@ than flipping it to the canonical default.
 - [ ] `lerd xdebug on 8.3 --mode debug`, `lerd xdebug status` reflects it,
       **https → 200 with Xdebug loaded** (`lerd php -m | grep xdebug`)
 - [ ] `lerd xdebug off 8.3`, **https → 200**
-- [ ] `lerd php:ext add redis` rebuilds and the extension is loaded
-- [ ] `lerd php:ext remove redis` rebuilds cleanly
+- [ ] `lerd php:ext add ds` rebuilds and the extension is loaded (redis already
+      ships in every image, so adding it is refused)
+- [ ] `lerd php:ext remove ds` rebuilds cleanly
 - [ ] `lerd php:ini shared` opens in `$EDITOR` and an edit survives a rebuild
 - [ ] Legacy tier: `lerd isolate 7.4` on a throwaway site pulls the frozen image
       and serves **200**, then put the site back on 8.4
@@ -343,12 +467,25 @@ than flipping it to the canonical default.
       `lerd php:odbc add <name> <driver.so>` registers a vendor driver that
       `php:odbc list` shows loading, **https → 200** after `remove`
 - [ ] A site linked on one version while its `.lerd.yaml` pins a version that
-      is not installed runs `lerd tinker` and `lerd logs` on the version it is
+      is not installed runs tinker (the dashboard's editor) and `lerd logs` on the version it is
       served with, the one the dashboard shows
 - [ ] `lerd php:rebuild` discloses the base image and its size before pulling
 - [ ] `lerd fetch` names the versions whose image is built but that nothing
       serves from yet, and points at `lerd php:rebuild`, so `lerd php:list` and
       `lerd new` no longer contradict the command before them
+- [ ] A site whose `.lerd.yaml` declares `env_provider`: `lerd env` with no
+      terminal refuses it and names `lerd env --yes`; `lerd env --yes` runs it
+      and writes `$XDG_RUNTIME_DIR/lerd/env/<site>.env` with mode 0600, and
+      none of its values lands in the site's `.env`
+- [ ] **https → 200** with the provided values on the page, a quoted
+      multi-line value (a PEM key) whole, and `lerd php` in the site sees them
+      too, while an exec whose `LERD_SITE` names another site loads nothing
+- [ ] Two sites on the same FPM container giving one key different values
+      never see each other's across 400 alternating concurrent requests
+- [ ] A changed provider value reaches the next request after
+      `lerd env --yes`, with no restart
+- [ ] The demo's queue worker runs a job that sees the demo's provided value
+- [ ] Unlinking a site removes its provided-env file
 
 ---
 
@@ -382,6 +519,14 @@ Add, use, and remove at least one database and one non-database service.
       data dir and dump are under `~/.local/share/lerd/backups`
 - [ ] `lerd service reinstall redis` comes back at the same version, and a
       reinstall keeps the preset it reads instead of refetching it from the store
+- [ ] A removed service stays removed: `lerd start`, `lerd install` and a link of
+      a site whose `.lerd.yaml` still lists it do not bring it back, and a
+      service container nothing owns shows as orphaned in the resources card
+      with a trash action that removes it
+- [ ] A site's Overview X on a service takes it out of `.lerd.yaml` and puts
+      the env keys it wired back to the project's example values, leaving the
+      service and its data alone; a plus on an env-only service records it in
+      `.lerd.yaml` without rewiring, **200** after each
 - [ ] Start RustFS after `lerd start`, from the CLI and from the dashboard: its
       console opens straight away through lerd's own vhost, already logged in on
       the bucket clicked, and again once its session has run out
@@ -416,7 +561,8 @@ Database operations:
       retention drops the oldest past the window, and `lerd db:snapshot:keep`
       exempts one from it for good
 - [ ] `lerd db:shell` opens an interactive shell
-- [ ] `lerd db:move --from mysql --to mariadb --site demo` moves the schema and
+- [ ] `lerd db:move --from mysql --to mysql-9-7 --site demo` (a move stays
+      within one engine family) moves the schema and
       repoints `.env`, **https → 200**
 - [ ] `lerd db:extension` lists what the engine can create, and adds one
 - [ ] `lerd minio:migrate` moves an existing MinIO volume onto RustFS
@@ -429,6 +575,20 @@ Every service path that can pull says what it will fetch first:
       and the download, and an image already in the local store needs no click
 - [ ] The MCP server answers with the image and its size instead of starting a
       download on behalf of someone who never typed the command
+
+
+Removing a service and what it leaves behind:
+
+- [ ] `lerd service remove <svc>` on a service a site's `.lerd.yaml` still
+      lists: `lerd install` and `lerd link` skip it and it stays gone; the
+      site's card shows it "Not installed" with a + action that installs it
+- [ ] A service container nothing installed owns shows in the Resources card's
+      Orphaned list, and its trash button stops and removes it
+- [ ] RustFS's console opened straight after the service starts loads, rather
+      than answering "server context is not ready"
+- [ ] Mailpit embedded in the dashboard on lerd.localhost answers its API with
+      the browser's Origin and opens its live websocket, with no cors warning
+      in its log
 
 ---
 
@@ -446,6 +606,43 @@ Every service path that can pull says what it will fetch first:
       hit the site and confirm they resume, **https → 200**
 - [ ] `lerd idle pin demo` keeps it awake; `lerd idle status` reports both states
 - [ ] `lerd idle off` resumes everything
+
+Idle-suspend can put services to sleep too (`idle_suspend.services`, off by
+default). Run this on at least two distros, with one mysql site on **https**,
+and `lerd idle timeout 1m` so each round takes a couple of minutes:
+
+- [ ] `lerd idle services on`: once every site using a service has been idle a
+      minute, `lerd idle status` lists it sleeping, `podman ps` shows only nginx,
+      dns and php-fpm, and the dashboard shows the moon and "N/M suspended"
+- [ ] A cold request to a sleeping site answers the app's own response in the
+      wake time, **https → 200**, with no redirect: `curl -sk` without `-L`.
+      Record the time; mysql lands around 1.3–1.6s, redis around 0.5s
+- [ ] A cold `curl -X POST -d a=1` reaches the app with its body and gets the
+      app's own answer (a 405 or 419 is fine), not a 307 and not the waking page
+- [ ] Fire a request the instant `lerd idle status` lists mysql, while its stop
+      is still running: it still answers **200**, and the watcher log shows mysql
+      waking straight away, not on the next tick
+- [ ] `lerd stop && lerd start` while asleep leaves the services asleep and the
+      next cold request still answers **200**
+- [ ] `lerd install` while asleep keeps the sites on their waking vhost
+      (`grep _lerd/wake` on the vhost) and the next cold request answers **200**
+- [ ] A site's `php artisan` (or the framework console) wakes its database, and
+      the next page load is warm with no redirect
+- [ ] Opening a sleeping service's dashboard shows the waking page, then the
+      dashboard; adminer wakes its databases with it, mailpit wakes spamassassin
+- [ ] A dashboard left open keeps its service awake past the timeout, and the
+      service sleeps once the overlay is closed
+- [ ] A sleeping engine's Databases tab wakes it and lists the databases, with
+      no "start the engine" hint and no connection error
+- [ ] Automatic snapshots on (`lerd db snapshot:auto on --every 1m`) with mysql
+      asleep since a change: restarting the watcher starts mysql once for every
+      due database, dumps them, and stops it again (a few seconds); a second
+      pass with nothing changed takes no snapshot
+- [ ] `lerd service pin <svc>` keeps it awake; the pin button sits in the
+      service's button group while services sleep
+- [ ] `lerd service stop <svc>` on a sleeping service keeps it stopped
+- [ ] `lerd idle services off` wakes everything, puts the real vhosts back, and
+      the sites answer **200**
 
 The named start commands are generated from the framework definition now, so
 what they accept has to come from the definition rather than from a fixed set:
@@ -520,6 +717,12 @@ lerd worktree add -b feat-x
 - [ ] Per-worktree asset worker starts as its own unit and Vite picks a free port
 - [ ] `lerd worktree wait ../demo-feat-x --timeout 10m` returns only once the
       pipeline has actually settled
+- [ ] A worktree whose `package.json` declares no packages settles: the watcher
+      does not reinstall it every minute and `lerd worktree wait` returns
+- [ ] A worktree another tool made with plain `git worktree add` is finished by
+      `lerd worktree setup` run inside it: it waits for the install, then runs
+      the asset build, the database pick and migration and the framework's
+      worktree commands, **200 on the new worktree**
 - [ ] Now the bare-git path: `git worktree add ../demo-feat-y -b feat-y`, the
       watcher runs the same pipeline unprompted, **200 on the new site**
 - [ ] Restart the daemon (`lerd stop && lerd start`) and confirm per-worktree
@@ -540,8 +743,13 @@ lerd worktree add -b feat-x
 - [ ] `lerd db:isolate --source <branch>` clones from another isolated worktree
 - [ ] `lerd db:share` drops the isolated schema and puts the worktree back on
       the parent's, **200**
+- [ ] `lerd service port mysql <port>` rewrites the worktrees' env as well as the
+      parent's, and a worktree sharing the parent's database stays on it, **200
+      on both**
 - [ ] Paths listed under `worktree_include` are copied into a fresh worktree,
       and one the worktree already carries is left as git checked it out
+- [ ] A gitignored `mise.toml` listed under `worktree_include` reaches every new
+      worktree, and the parent's `git status` stays clean
 - [ ] On a SQLite project a new worktree gets its own copy of the database file,
       from the wrapper and from bare git alike, `lerd worktree add` skips the
       database prompt, and a write in the worktree leaves the parent's file
@@ -563,7 +771,7 @@ lerd worktree add -b feat-x
       page itself answers **200**
 - [ ] `lerd unpause demo` restores the vhost and restarts workers, **200**
 - [ ] `lerd restart demo`, **200**
-- [ ] `lerd link` with a custom `--domain foo.test`, **200 on foo.test**
+- [ ] `lerd domain add foo` on a linked site, **200 on foo.test**
 - [ ] `lerd unlink` stops serving it (connection refused or 404, not a stale 200)
 - [ ] `lerd park ~/Projects` picks up existing projects and a newly created one
 - [ ] `lerd unpark ~/Projects` unlinks them
@@ -577,6 +785,9 @@ lerd worktree add -b feat-x
 - [ ] `lerd lan:share` prints a URL and QR; from a second machine or the host,
       **`curl http://<lan-ip>:<port>` → 200** with assets loading (URL rewriting)
 - [ ] `lerd lan:unshare` releases the port
+- [ ] On a LAN share of a secured Inertia site with Ziggy, clicking a link and
+      posting a form both work over plain http: no `ERR_SSL_PROTOCOL_ERROR`, no
+      419
 - [ ] `lerd lan:expose` / `lan:status` / `lan:services on|off` / `lan:unexpose`
 - [ ] `lerd remote-setup` pairs a device, and `lerd remote-control full-access
       on|off|status` gates host actions
@@ -695,6 +906,16 @@ Dashboard (drive it in a browser, not with curl):
 
 Themes:
 
+- [ ] The System page's AI assistants switch registers lerd with every supported
+      client the way `lerd mcp:enable-global` does, and switching it off
+      removes it again
+- [ ] With the keyboard alone: Skip to content is the first Tab stop, a dialog
+      takes focus, keeps Tab inside, closes on Escape and hands focus back, and
+      toggles announce their state
+- [ ] The installed app window's title reads Lerd once, while a browser tab
+      reads `Dashboard · Lerd`
+- [ ] Stopping a service logs one stop in the activity feed, and its Logs tab
+      says it is not running instead of reconnecting, picking up once it starts
 - [ ] Each of the twelve themes applies, and its accent reads correctly as link
       text on both the light and the dark tone
 - [ ] The choice lives in the config, not in browser storage: it survives a hard
@@ -715,16 +936,52 @@ Themes:
       Express, RabbitMQ, Kafbat, RedisInsight, the profiler) wears the theme's
       accent inside the frame and flips with the dashboard's mode
 
+- [ ] Switching services from the rail in a dark theme shows no white flash and
+      no light fringe on the frame's corner
+- [ ] With the dashboard in another language than the browser, Adminer,
+      phpMyAdmin and pgAdmin open in the dashboard's language
+- [ ] On Omarchy a light desktop theme paints the dashboard's light mode in its
+      tones, and a theme carrying a `lerd.yaml` overrides them
+- [ ] On Plasma (bazzite) the rail and headers lift to the focused header
+      colour while the window has focus and drop back when it loses it
+
 TUI:
 
-- [ ] `lerd tui` renders sites, services, workers with live status
-- [ ] Detail pane, inline domain and version editing, filter, sort all work
-- [ ] Shell drop-in and log tail work
-- [ ] The databases pane lists the databases and opens one
-- [ ] A service's client tools, tuning and entities are reachable, matching what
-      the web UI offers
-- [ ] Services with a web dashboard are marked, and opening one works
-- [ ] Destructive commands are **absent** (scope guard)
+- [ ] `lerd tui` opens on the dashboard beside a sidebar: Dashboard, Databases,
+      PHP & Node, Settings, then SITES and SERVICES with running/total counts,
+      and dns, nginx and the watcher at its foot with their state
+- [ ] Sites are grouped by workspace, and a folded workspace still shows a
+      crashed worker as ✖ with its count
+- [ ] Stopping the watcher puts "The watcher is stopped" under NEEDS ATTENTION;
+      `tab` then `r` runs `lerd start` and the dashboard returns to "Everything
+      is running"
+- [ ] A crashed worker shows as a card and on its site row; `r` restarts it and
+      `H` heals every crashed worker
+- [ ] Opening a site shows its URL, PHP and Node versions and https/lan flags
+      over the Overview, Logs, Env, Debug and Doctor tabs; `1`–`5` switch tabs
+      and Logs tails live
+- [ ] The Overview's reversible controls work: keep awake, the php-fpm and
+      FrankenPHP runtime, Horizon reload, the Stripe listener, open in editor or
+      folder, new worktree; suggested services are listed read-only
+- [ ] Databases lists each engine's databases with the `_testing` twin folded
+      into its row, creates and exports one; Services pins and adds presets; PHP
+      & Node sets the defaults and toggles Xdebug; Settings flips what the CLI can
+- [ ] `ctrl+p` lists pages, sites, worktrees, services, their actions and the
+      settings; words match in any order (`logs demo`), `enter` runs the entry,
+      and "Run a lerd command…" hands over to the `:` prompt
+- [ ] Destructive actions are **absent** from the keys and from `ctrl+p`:
+      nothing removes, drops, unlinks, restores, uninstalls, purges or resets
+      (scope guard)
+- [ ] Below 96 columns the sidebar folds away, and `tab` or `\` opens it over
+      the main area while `tab` or `esc` closes it again; below 60×12 only
+      "terminal too small" is drawn
+- [ ] Colours come from the terminal's own palette: a light and a dark profile
+      (and an Omarchy theme switch) each read cleanly, with no fixed background
+- [ ] Dialogs and toasts draw over the dimmed screen; the debug window's Logs,
+      Exceptions and Messages lenses fill from a request; a slow route shows its
+      hottest SPX function in the timing panel
+- [ ] Shell drop-in works, and a service with a web dashboard is marked and
+      opens it
 
 Tray:
 
@@ -788,6 +1045,10 @@ Other surfaces:
       banner and in the dashboard footer
 - [ ] `lerd open demo` opens the browser
 - [ ] Node: `node:install`, `node:use`, `isolate:node`, `lerd npm run build`
+- [ ] The Node version a project pins in `mise.toml`, `.mise.toml` or
+      `.tool-versions` is the one `lerd which`, `lerd npm` and the link use,
+      `.nvmrc` and `.node-version` still win over them, and a site pinning none
+      keeps its version across the upgrade
 - [ ] `lerd node:manage` installs the shims and a default, `node:manager` shows
       and switches the manager, `node:unmanage` and `node:uninstall` undo it
 - [ ] `lerd node:manager mise` carries every installed major across and drops
@@ -799,6 +1060,22 @@ Other surfaces:
 - [ ] `lerd js:runtime bun`, `lerd php:bun install`, a bun build runs, **200**
 - [ ] Runtime: `lerd runtime frankenphp` → **200**, `--worker` → **200**,
       `lerd octane:reload on`, then `lerd runtime fpm` → **200**
+
+- [ ] Stopping a service logs one "stopped" in the activity feed, not two
+- [ ] A stopped service's Logs tab says it is not running instead of retrying a
+      stream; a stopped worker still shows its journal
+- [ ] A site's suggested services sit faded with a dashed border and come back
+      to full on hover, while their + and × stay fully visible
+- [ ] With debug capture on, a PHP response carries `X-Lerd-Rid`, its captured
+      events carry that id, and its row in Recent requests carries it with a
+      clean path; with capture off the path stays clean (no `-|` glued on)
+- [ ] With the profiler on, a request answers **200** and its SPX capture
+      carries `lerd-rid:<id>`; a request whose SPX cookie names the wrong key,
+      and one sending SPX cookies while the profiler is off, answer **200**, and
+      the FPM log shows no segfault
+- [ ] Restarting lerd-ui keeps a request's debug events (`dumps-buffer.json`,
+      mode 600), and removing its route from history drops those events and its
+      SPX capture
 
 ---
 
@@ -839,8 +1116,9 @@ Other surfaces:
 - [ ] Every installed quadlet's image counts as protected: a cleanup run while a
       site is stopped does not cost that site a rebuild
 - [ ] What a run reports freed is measured against the image store on both
-      sides and matches roughly what the disk gave back, and the preview says
-      at least rather than about
+      sides and matches the `podman system df` Images delta, says image store
+      rather than disk, and the preview says at least rather than about (on a
+      compressed filesystem the disk gives back less, as the docs explain)
 - [ ] The resources widget's disk figure is what lerd's images occupy whether or
       not any of it is reclaimable, and clicking it opens the breakdown heaviest
       first
@@ -848,19 +1126,36 @@ Other surfaces:
 - [ ] `lerd bug-report -o report.txt` anonymizes names by default and
       `--show-real-names` keeps them
 - [ ] `lerd framework update` finishes in a couple of seconds rather than
-      fourteen, and `--check` still reports a diff per definition
+      fourteen, and `--diff` shows the changes per definition before applying
 - [ ] `sites.bkp` beside the registry holds the last ten versions, a save that
       changes nothing takes no slot, and `lerd sites:restore` lists them and
       puts one back with every site serving **200** afterwards
 - [ ] `lerd tools:update` brings Composer, the Node manager and mkcert to the current pins
 - [ ] `lerd env:check`, `lerd env:override`, `lerd env:restore` round trip
 - [ ] `lerd auth ssh` loads a key and `lerd composer` reaches a private repo
+- [ ] With no `~/.config/composer` and a global `auth.json` in `~/.composer`,
+      `lerd composer` reads it, the way composer itself would
 - [ ] `lerd autostart on|status|off`, and with autostart **off** no worker is
       armed for boot
 - [ ] `lerd stop` then `lerd start`: everything comes back, **200 on both sites**
 - [ ] Reboot the guest: with autostart enabled everything comes back on login,
       **200 on both sites without any manual command**
+- [ ] Linux, fedora guest: a boot where the NIC comes up late leaves the
+      container network with no route out, and `lerd start` rebuilds it. Rig it
+      with a oneshot system unit that adds a link-down `docker0` bridge at
+      172.17.0.1/16 before NetworkManager, turn off the NIC connection's
+      autoconnect, and bring it up from a system timer 90s after boot. After
+      the reboot doctor fails `container network route` and `internet DNS from
+      containers`; one `lerd start` prints "Rebuilt the container network" and
+      doctor is clean, **composer resolves packagist inside the container**.
+      Remove the rig and restore autoconnect afterwards
 - [ ] `lerd quit` stops everything including `lerd-dns`, UI, watcher and tray
+
+
+- [ ] With a site's stripe listener asleep under idle-suspend, `lerd cleanup`
+      does not offer `docker.io/stripe/stripe-cli` for removal
+- [ ] After the reboot a site's `env_provider` values are served again once
+      `lerd start` has run, though tmpfs came back empty
 
 ---
 
@@ -914,7 +1209,7 @@ Run last on each guest, because it is destructive.
 - [ ] The sudoers rule and the mkcert CA are removed from the system
 - [ ] `/etc/sysctl.d/99-lerd-ports.conf` is gone, and on a dracut host whose
       initramfs still carries it the run prints `sudo dracut -f`
-- [ ] On Omarchy `install.sh --uninstall` takes Lerd Glance off the bar
+- [ ] On Omarchy `lerd uninstall` takes Lerd Glance off the bar
 - [ ] On a host without systemd-resolved (omarchy) no DNS step is drawn failed
 - [ ] `~/.local/bin/lerd` is gone on a script install; on a packaged install the
       binary **stays** and the matching `apt remove` / `dnf remove` /
@@ -978,6 +1273,12 @@ skipped rather than quietly passing it.
       deletes the build, its extensions and the generated pool config, the
       version really leaves `lerd php:list`, and the confirmation names the
       binaries it deletes and the command that fetches them back
+- [ ] The Debug lenses fill on the native runtime from the capture seams under
+      the data directory
+- [ ] A native build republished with the same PHP version is offered as an
+      update by its date, and the action is always pressable
+- [ ] `lerd install` on the native runtime starts no shared FPM container, and
+      one left over from before stays down
 - [ ] The update action downloads the published build and restarts the pool,
       and its modal says update rather than rebuild
 - [ ] At phone width the detail panel loads the runtime itself, so no image

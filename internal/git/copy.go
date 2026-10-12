@@ -3,6 +3,7 @@ package git
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"time"
 
@@ -31,16 +31,7 @@ func CopyTree(src, dst string) error {
 }
 
 func copyTreeCP(src, dst string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "linux":
-		cmd = exec.Command("cp", "-a", "--reflink=auto", src, dst)
-	case "darwin":
-		cmd = exec.Command("cp", "-Rc", src, dst)
-	default:
-		return errors.New("reflink path unsupported on " + runtime.GOOS)
-	}
-	return cmd.Run()
+	return reflinkCopyCmd(src, dst).Run()
 }
 
 func copyTreeNative(src, dst string) error {
@@ -113,11 +104,8 @@ func InstallDependencies(projectPath string, out io.Writer) error {
 	var errs []error
 
 	if composerNeedsInstall(projectPath) {
-		composer := filepath.Join(config.BinDir(), "composer")
-		if err := runIn(projectPath, out, composer, "install", "--no-interaction", "--no-progress"); err != nil {
-			errs = append(errs, fmt.Errorf("composer install: %w", err))
-		} else {
-			stampInstallMarker(filepath.Join(projectPath, "vendor", "composer", "installed.json"))
+		if err := InstallComposer(projectPath, out); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
@@ -131,6 +119,9 @@ func InstallDependencies(projectPath string, out io.Writer) error {
 			errs = append(errs, err)
 		} else {
 			stampInstallMarker(marker)
+			if err := stampLerdJSMarker(projectPath, marker); err != nil {
+				errs = append(errs, fmt.Errorf("js install marker: %w", err))
+			}
 		}
 	}
 
@@ -141,6 +132,33 @@ func InstallDependencies(projectPath string, out io.Writer) error {
 	// build explicitly via RunFrontendBuild after dependencies are in place.
 
 	return errors.Join(errs...)
+}
+
+// InstallComposer runs composer install whether or not the marker says one is due.
+func InstallComposer(projectPath string, out io.Writer) error {
+	composer := filepath.Join(config.BinDir(), "composer")
+	if err := runIn(projectPath, out, composer, "install", "--no-interaction", "--no-progress"); err != nil {
+		return fmt.Errorf("composer install: %w", err)
+	}
+	stampInstallMarker(filepath.Join(projectPath, "vendor", "composer", "installed.json"))
+	return nil
+}
+
+// InstallJS runs the project's JS package install whether or not one is due.
+func InstallJS(projectPath string, out io.Writer) error {
+	if err := jsInstaller(projectPath, out); err != nil {
+		return err
+	}
+	marker, _ := jsInstallPaths(projectPath)
+	stampInstallMarker(marker)
+	return nil
+}
+
+// JSInstallCommandAt names the install ref's lockfiles call for, like "npm ci",
+// for the project at prefix inside the repository at dir.
+func JSInstallCommandAt(dir, ref, prefix string) string {
+	name, args := jsManagerFor(func(f string) bool { return FileAtRef(dir, ref, prefix+f) })
+	return name + " " + args[0]
 }
 
 // RunNpmScript executes `<package-manager> run <script>` in projectPath,
@@ -198,11 +216,52 @@ func composerNeedsInstall(projectPath string) bool {
 // package manager's install marker under node_modules/ is at-or-newer than
 // the lockfile; true otherwise.
 func jsNeedsInstall(projectPath string) bool {
-	if !hasFile(projectPath, "package.json") {
+	if !HasJSPackages(projectPath) {
 		return false
 	}
 	marker, ref := jsInstallPaths(projectPath)
-	return markerStale(marker, ref)
+	return markerStale(marker, ref) &&
+		markerStale(filepath.Join(projectPath, "node_modules", lerdJSInstallMarker), ref)
+}
+
+// lerdJSInstallMarker is the marker lerd writes itself when a successful JS
+// install leaves none of its own: npm 6 has no node_modules/.package-lock.json
+// and yarn 1 no .yarn/install-state.gz.
+const lerdJSInstallMarker = ".lerd-installed"
+
+// stampLerdJSMarker writes lerd's own marker after a successful install whose
+// package manager wrote no marker. Without node_modules nothing was installed,
+// so nothing is written and the check keeps asking.
+func stampLerdJSMarker(projectPath, marker string) error {
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	}
+	err := os.WriteFile(filepath.Join(projectPath, "node_modules", lerdJSInstallMarker), nil, 0o644)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// HasJSPackages reports whether projectPath has a package.json that installs
+// anything. npm creates no node_modules for a manifest without packages, so
+// waiting for one would never end. A manifest that does not parse counts as
+// having packages, leaving the install to report what is wrong with it.
+func HasJSPackages(projectPath string) bool {
+	data, err := os.ReadFile(filepath.Join(projectPath, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Dependencies         map[string]any `json:"dependencies"`
+		DevDependencies      map[string]any `json:"devDependencies"`
+		OptionalDependencies map[string]any `json:"optionalDependencies"`
+		Workspaces           any            `json:"workspaces"`
+	}
+	if json.Unmarshal(data, &pkg) != nil {
+		return true
+	}
+	return len(pkg.Dependencies)+len(pkg.DevDependencies)+len(pkg.OptionalDependencies) > 0 || pkg.Workspaces != nil
 }
 
 // jsInstallPaths returns the absolute paths to the install marker and the
@@ -273,20 +332,25 @@ func markerStale(marker, ref string) bool {
 
 // jsPackageManager returns the name and install args for the package
 // manager a project uses, picked from the presence of lockfiles.
+func jsPackageManager(projectPath string) (name string, args []string) {
+	return jsManagerFor(func(f string) bool { return hasFile(projectPath, f) })
+}
+
+// jsManagerFor picks the manager from which lockfiles has reports present.
 // Preference order mirrors each manager's lockfile being definitive:
 // pnpm-lock.yaml ▸ yarn.lock ▸ bun.lock(b) ▸ npm lockfile ▸ npm as fallback.
-func jsPackageManager(projectPath string) (name string, args []string) {
+func jsManagerFor(has func(string) bool) (name string, args []string) {
 	switch {
-	case hasFile(projectPath, "pnpm-lock.yaml"):
+	case has("pnpm-lock.yaml"):
 		return "pnpm", []string{"install", "--frozen-lockfile"}
-	case hasFile(projectPath, "yarn.lock"):
+	case has("yarn.lock"):
 		// --immutable covers both yarn classic (v1) and berry (v2+); v1
 		// doesn't understand it but falls back to default install, which
 		// is what we want if the lockfile is already present.
 		return "yarn", []string{"install", "--immutable"}
-	case hasFile(projectPath, "bun.lockb"), hasFile(projectPath, "bun.lock"):
+	case has("bun.lockb"), has("bun.lock"):
 		return "bun", []string{"install", "--frozen-lockfile"}
-	case hasFile(projectPath, "package-lock.json"), hasFile(projectPath, "npm-shrinkwrap.json"):
+	case has("package-lock.json"), has("npm-shrinkwrap.json"):
 		return "npm", []string{"ci", "--no-progress"}
 	default:
 		return "npm", []string{"install", "--no-progress"}
@@ -405,10 +469,7 @@ func lookJSBin(name string) (string, bool) {
 	if p, err := exec.LookPath(name); err == nil {
 		return p, true
 	}
-	if runtime.GOOS != "darwin" {
-		return "", false
-	}
-	for _, dir := range []string{"/opt/homebrew/bin", "/usr/local/bin"} {
+	for _, dir := range osToolDirs() {
 		candidate := filepath.Join(dir, name)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate, true

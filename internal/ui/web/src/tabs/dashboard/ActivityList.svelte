@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { relativeTime } from '$lib/relativeTime';
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
   import StatusDot from '$components/StatusDot.svelte';
@@ -27,6 +28,8 @@
     service_removed: 'gray',
     service_active: 'green',
     service_inactive: 'red',
+    service_slept: 'sky',
+    service_woke: 'green',
     service_update: 'amber',
     service_version: 'violet',
     worker_failed: 'red',
@@ -52,6 +55,8 @@
       case 'service_removed': return m.activity_service_removed({ subject: e.subject });
       case 'service_active': return m.activity_service_active({ subject: e.subject });
       case 'service_inactive': return m.activity_service_inactive({ subject: e.subject });
+      case 'service_slept': return m.activity_service_slept({ subject: e.subject });
+      case 'service_woke': return m.activity_service_woke({ subject: e.subject });
       case 'service_update': return m.activity_service_update({ subject: e.subject, version: v || '?' });
       case 'service_version': return m.activity_service_version({ subject: e.subject, version: v });
       case 'worker_failed': return m.activity_worker_failed({ worker: w, subject: e.subject });
@@ -63,21 +68,10 @@
       case 'dns_recovered': return m.activity_dns_recovered();
     }
   }
-
-  function relative(at: number, ref: number): string {
-    const diff = Math.max(0, ref - at);
-    if (diff < 30_000) return m.time_now();
-    const mins = Math.floor(diff / 60_000);
-    if (mins < 60) return m.time_min_ago({ n: Math.max(1, mins) });
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return m.time_hour_ago({ n: hours });
-    const days = Math.floor(hours / 24);
-    return m.time_day_ago({ n: days });
-  }
 </script>
 
 {#if $activity.length === 0}
-  <p class="text-xs text-gray-400 dark:text-gray-500">{m.dashboard_activity_empty()}</p>
+  <p class="text-xs text-gray-500 dark:text-gray-400">{m.dashboard_activity_empty()}</p>
 {:else}
   <div class="space-y-1">
     {#each $activity as e (e.id)}
@@ -87,7 +81,7 @@
       >
         <span class="mt-1.5 shrink-0"><StatusDot color={dotColor[e.kind]} size="xs" /></span>
         <span class="flex-1 text-gray-700 dark:text-gray-300 leading-snug truncate">{label(e)}</span>
-        <span class="shrink-0 text-[10px] font-mono text-gray-400 dark:text-gray-500 mt-0.5">{relative(e.at, $now)}</span>
+        <span class="shrink-0 text-[10px] font-mono text-gray-500 dark:text-gray-400 mt-0.5">{relativeTime(e.at, $now)}</span>
       </div>
     {/each}
   </div>

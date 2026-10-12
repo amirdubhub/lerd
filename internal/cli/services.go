@@ -268,16 +268,12 @@ func newServiceStartCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
 
-			var image string
-			if isKnownService(name) {
-				image = podman.ServiceImage("lerd-" + name)
-			} else {
-				svc, loadErr := config.LoadCustomService(name)
-				if loadErr != nil {
+			if !isKnownService(name) {
+				if _, loadErr := config.LoadCustomService(name); loadErr != nil {
 					return fmt.Errorf("unknown service %q", name)
 				}
-				image = svc.Image
 			}
+			image := serviceops.StartImage(name)
 
 			if image != "" && !podman.ImageExists(image) {
 				imagepull.Plan{
@@ -862,6 +858,7 @@ func ListInstallablePresets() ([]config.PresetMeta, error) {
 				Color:          config.NormalizeBrandColor(e.Color),
 				AdminFor:       e.AdminFor,
 				AdminRank:      e.AdminRank,
+				SuggestFor:     e.SuggestFor,
 			})
 		}
 	}
@@ -1495,6 +1492,9 @@ func autoStopUnusedFPMs() {
 // serviceInactiveReason returns an extra note for an inactive service explaining
 // why it is stopped, if the reason is that no sites are using it.
 func serviceInactiveReason(name string) string {
+	if config.ServiceIsIdleSuspended(name) {
+		return " (sleeping, wakes on the next request)"
+	}
 	if config.CountSitesUsingService(name) == 0 {
 		return " (no sites using this service)"
 	}

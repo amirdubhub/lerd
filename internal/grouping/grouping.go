@@ -84,6 +84,12 @@ func AssignSecondary(main, secondary *config.Site, label string, shareDB bool) e
 		return fmt.Errorf("the main site %q has a git worktree using the subdomain %q; pick another label", main.Name, label)
 	}
 
+	if shareDB {
+		if err := sharableDatabases(main, secondary); err != nil {
+			return err
+		}
+	}
+
 	mainPromoted := false
 	if main.Group == "" {
 		main.Group = main.Name
@@ -145,6 +151,11 @@ func SetSecondarySharedDB(secondary *config.Site, shareDB bool) error {
 	if main == nil {
 		return fmt.Errorf("group %q has no main site", secondary.Group)
 	}
+	if shareDB {
+		if err := sharableDatabases(main, secondary); err != nil {
+			return err
+		}
+	}
 	secondary.GroupSharedDB = shareDB
 	if err := config.AddSite(*secondary); err != nil {
 		return fmt.Errorf("updating site registry: %w", err)
@@ -155,6 +166,25 @@ func SetSecondarySharedDB(secondary *config.Site, shareDB bool) error {
 		applySharedDBEnv(secondary, config.SiteSlug(secondary.Name))
 	}
 	return nil
+}
+
+// sharableDatabases refuses a share when either site keeps its database in a
+// file: its DB_DATABASE is a path, so a schema name written there points the
+// app at a file that does not exist.
+func sharableDatabases(main, secondary *config.Site) error {
+	for _, s := range []*config.Site{main, secondary} {
+		if usesFileDatabase(s.Path) {
+			return fmt.Errorf("site %q keeps its database in a file, so the group cannot share one database", s.Name)
+		}
+	}
+	return nil
+}
+
+// usesFileDatabase reports whether the site's .env names a driver no database
+// engine serves, SQLite being the one in practice.
+func usesFileDatabase(path string) bool {
+	v := envfile.ReadKey(filepath.Join(path, ".env"), "DB_CONNECTION")
+	return v != "" && !config.IsServerDBDriver(v)
 }
 
 // MainDBName returns the database name a shared-DB secondary should use: the
@@ -186,13 +216,28 @@ func SharedDBNameFor(s *config.Site) (string, bool) {
 
 // applySharedDBEnv rewrites DB_DATABASE in the secondary's .env, but only when
 // the file already declares it (a site with no database is left untouched).
+// Its worktrees sharing that database follow; an isolated one keeps its own.
 func applySharedDBEnv(secondary *config.Site, dbName string) {
 	envPath := filepath.Join(secondary.Path, ".env")
-	if envfile.ReadKey(envPath, "DB_DATABASE") == "" {
+	old := envfile.ReadKey(envPath, "DB_DATABASE")
+	if old == "" || usesFileDatabase(secondary.Path) {
 		return
 	}
-	if err := envfile.ApplyUpdates(envPath, map[string]string{"DB_DATABASE": dbName}); err != nil {
+	change := map[string]string{"DB_DATABASE": dbName}
+	if err := envfile.ApplyUpdates(envPath, change); err != nil {
 		fmt.Fprintf(os.Stderr, "lerd: updating DB_DATABASE for %s: %v\n", secondary.Name, err)
+		return
+	}
+	worktrees, _ := gitpkg.DetectWorktrees(secondary.Path, secondary.PrimaryDomain())
+	for _, wt := range worktrees {
+		wtEnv := filepath.Join(wt.Path, ".env")
+		carried := envfile.CarriedValues(envfile.ReadValues(wtEnv), map[string]string{"DB_DATABASE": old}, change)
+		if len(carried) == 0 {
+			continue
+		}
+		if err := envfile.ApplyUpdates(wtEnv, carried); err != nil {
+			fmt.Fprintf(os.Stderr, "lerd: updating DB_DATABASE for worktree %s of %s: %v\n", wt.Branch, secondary.Name, err)
+		}
 	}
 }
 

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -114,5 +116,17 @@ func TestWithPinnedWorkerPort_FillsThePortIntoTheCommand(t *testing.T) {
 	want := "env PROBE_PORT=" + port + " LERD_PASSTHROUGH_ENV=PROBE_PORT python3 -m http.server " + port + " --bind " + port
 	if got != want {
 		t.Errorf("command = %q, want %q", got, want)
+	}
+}
+
+// A worker start must not replace a FrankenPHP site's container vhost with the
+// FPM render, which points at a shared FPM service the site no longer uses.
+func TestRegenNginxVhost_LeavesFrankenPHPVhostAlone(t *testing.T) {
+	stageSites(t, config.Site{Name: "fp", Path: t.TempDir(), Runtime: "frankenphp", PHPVersion: "8.5", Domains: []string{"fp.test"}})
+
+	regenNginxVhost("fp", t.TempDir())
+
+	if _, err := os.Stat(filepath.Join(config.NginxConfD(), "fp.test.conf")); !os.IsNotExist(err) {
+		t.Errorf("FPM vhost was written for a FrankenPHP site (stat err = %v)", err)
 	}
 }

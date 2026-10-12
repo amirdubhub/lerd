@@ -26,35 +26,35 @@ function dbService(): Service {
 }
 
 describe('ServiceDetail databases tab', () => {
-  beforeEach(() => accessMode.set({ localControl: true, lanExposed: false, checked: true }));
+  beforeEach(() => accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true }));
 
   it('shows the Databases tab with dashboard-control authority', () => {
     const { getByRole } = render(ServiceDetail, { props: { svc: dbService() } });
-    expect(getByRole('button', { name: 'Databases' })).toBeInTheDocument();
+    expect(getByRole('tab', { name: 'Databases' })).toBeInTheDocument();
   });
 
   it('hides the Databases tab without dashboard-control authority', () => {
-    accessMode.set({ localControl: false, lanExposed: true, checked: true });
+    accessMode.set({ localControl: false, local: false, lanExposed: true, checked: true });
     const { queryByRole } = render(ServiceDetail, { props: { svc: dbService() } });
-    expect(queryByRole('button', { name: 'Databases' })).toBeNull();
+    expect(queryByRole('tab', { name: 'Databases' })).toBeNull();
   });
 
   // Snapshots belong to the databases the engine holds, so the tab follows the
   // same authority and the same is_database guard.
   it('shows the Snapshots tab beside Databases', () => {
     const { getByRole } = render(ServiceDetail, { props: { svc: dbService() } });
-    expect(getByRole('button', { name: 'Snapshots' })).toBeInTheDocument();
+    expect(getByRole('tab', { name: 'Snapshots' })).toBeInTheDocument();
   });
 
   it('hides the Snapshots tab on a service that holds no databases', () => {
     const svc = { ...dbService(), is_database: false };
     const { queryByRole } = render(ServiceDetail, { props: { svc } });
-    expect(queryByRole('button', { name: 'Snapshots' })).toBeNull();
+    expect(queryByRole('tab', { name: 'Snapshots' })).toBeNull();
   });
 });
 
 describe('ServiceDetail entities tab', () => {
-  beforeEach(() => accessMode.set({ localControl: true, lanExposed: false, checked: true }));
+  beforeEach(() => accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true }));
 
   function entityService(): Service {
     return {
@@ -70,19 +70,19 @@ describe('ServiceDetail entities tab', () => {
   // entity-declaring service lands on its entity tab, not on logs.
   it('opens on the entity tab, named after the declared kind', () => {
     const { getByRole } = render(ServiceDetail, { props: { svc: entityService() } });
-    const tab = getByRole('button', { name: 'Buckets' });
+    const tab = getByRole('tab', { name: 'Buckets' });
     expect(tab.className).toContain('border-lerd-red');
   });
 
   it('hides the entity tab without dashboard-control authority', () => {
-    accessMode.set({ localControl: false, lanExposed: true, checked: true });
+    accessMode.set({ localControl: false, local: false, lanExposed: true, checked: true });
     const { queryByRole } = render(ServiceDetail, { props: { svc: entityService() } });
-    expect(queryByRole('button', { name: 'Buckets' })).toBeNull();
+    expect(queryByRole('tab', { name: 'Buckets' })).toBeNull();
   });
 });
 
 describe('ServiceDetail logs tab', () => {
-  beforeEach(() => accessMode.set({ localControl: true, lanExposed: false, checked: true }));
+  beforeEach(() => accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true }));
   const redis = (over: Partial<Service> = {}) =>
     ({ name: 'redis', status: 'active', site_count: 0, ...over }) as Service;
 
@@ -96,6 +96,14 @@ describe('ServiceDetail logs tab', () => {
     const { getAllByTestId, getByText } = render(ServiceDetail, { props: { svc: redis({ status: 'inactive' }) } });
     expect(getAllByTestId('child-stub')).toHaveLength(2);
     expect(getByText(/Not running, so there are no logs to stream/)).toBeInTheDocument();
+  });
+
+  it('opens no stream for a sleeping service', () => {
+    const { getAllByTestId, getByText } = render(ServiceDetail, {
+      props: { svc: redis({ status: 'inactive', idle_suspended: true }) }
+    });
+    expect(getAllByTestId('child-stub')).toHaveLength(2);
+    expect(getByText(/Asleep, so there are no logs to stream/)).toBeInTheDocument();
   });
 });
 

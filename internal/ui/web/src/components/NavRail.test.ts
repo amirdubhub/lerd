@@ -11,7 +11,7 @@ const MARK = '<svg viewBox="0 0 24 24"><path d="M3 3h18v18H3z"/></svg>';
 beforeEach(() => {
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch;
-  accessMode.set({ localControl: true, lanExposed: false, checked: true });
+  accessMode.set({ localControl: true, local: true, lanExposed: false, checked: true });
   dashboardOpen.set(null);
   serviceIcons.set({ mailpit: MARK });
   services.set([
@@ -75,4 +75,23 @@ it('gives the scrolling launchers as much width as the buttons in them', () => {
     Number(/(?:^|\s)w-(\d+)(?:\s|$)/.exec(el?.className ?? '')?.[1] ?? 0);
 
   expect(widthOf(scroller)).toBeGreaterThanOrEqual(widthOf(button));
+});
+
+// The notification badge is the one that asks for attention, so it leads;
+// the theme is set once and sits last, beside the version.
+it('orders the bottom actions by how often they need you', () => {
+  const { getByLabelText } = render(NavRail);
+  const order = [/notifications/i, /documentation/i, /auto|light|dark/i].map((l) => getByLabelText(l));
+  for (let i = 1; i < order.length; i++) {
+    expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+});
+
+// A bigger hover square on one of them made the column look uneven.
+it('gives every bottom action the same hover area', () => {
+  const { getByLabelText } = render(NavRail);
+  const sizes = [/notifications/i, /documentation/i, /auto|light|dark/i].map(
+    (l) => getByLabelText(l).className.match(/\bw-\d+ h-\d+\b/)?.[0]
+  );
+  expect(new Set(sizes).size).toBe(1);
 });

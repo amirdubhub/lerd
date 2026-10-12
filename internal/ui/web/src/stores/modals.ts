@@ -3,12 +3,15 @@ import type { Site, EnvProposeEntry, NginxScope } from "./sites";
 
 export type ModalKind =
   | "domain"
+  | "browserLogs"
   | "group"
   | "link"
   | "preset"
   | "remoteControl"
   | "lanProgress"
   | "worktreeAdd"
+  | "branchSwitch"
+  | "gitPull"
   | "worktreeRemove"
   | "phpAdd"
   | "phpRebuild"
@@ -31,6 +34,7 @@ export type ModalKind =
   | "tuningReset"
   | "workspaceDelete"
   | "siteUnlink"
+  | "siteServiceRemove"
   | "serviceInstall"
   | "changelog"
   | "error"
@@ -160,6 +164,11 @@ export interface SiteUnlinkTarget {
   domain: string;
 }
 
+export interface SiteServiceRemoveTarget {
+  domain: string;
+  name: string;
+}
+
 export interface ServiceInstallTarget {
   name: string;
 }
@@ -195,9 +204,12 @@ export interface ErrorTarget {
 export interface ModalState {
   kind: ModalKind;
   site?: Site;
+  browserLogsSite?: string;
   lanAction?: LANAction;
   onSuccess?: () => void;
   branch?: string;
+  // The checkout to pull: '' for the site's main one, else a worktree's branch.
+  pull?: { domain: string; branch: string; label: string };
   envSave?: EnvSaveTarget;
   envRestore?: EnvRestoreTarget;
   envPropose?: EnvProposeTarget;
@@ -218,6 +230,7 @@ export interface ModalState {
   tuningReset?: TuningResetTarget;
   workspaceDelete?: WorkspaceDeleteTarget;
   siteUnlink?: SiteUnlinkTarget;
+  siteServiceRemove?: SiteServiceRemoveTarget;
   serviceInstall?: ServiceInstallTarget;
   error?: ErrorTarget;
 }
@@ -238,6 +251,10 @@ export function openSiteUnlinkModal(target: SiteUnlinkTarget) {
   modal.set({ kind: "siteUnlink", siteUnlink: target });
 }
 
+export function openSiteServiceRemoveModal(target: SiteServiceRemoveTarget) {
+  modal.set({ kind: "siteServiceRemove", siteServiceRemove: target });
+}
+
 export function openChangelogModal() {
   modal.set({ kind: "changelog" });
 }
@@ -248,6 +265,10 @@ export function openServiceInstallModal(name: string) {
 
 export function openDomainModal(site: Site) {
   modal.set({ kind: "domain", site });
+}
+
+export function openBrowserLogsModal(site: string) {
+  modal.set({ kind: "browserLogs", browserLogsSite: site });
 }
 
 export function openGroupModal(site: Site) {
@@ -272,6 +293,14 @@ export function openLANProgressModal(lanAction: LANAction) {
 
 export function openWorktreeAddModal(site: Site) {
   modal.set({ kind: "worktreeAdd", site });
+}
+
+export function openBranchSwitchModal(site: Site) {
+  modal.set({ kind: "branchSwitch", site });
+}
+
+export function openPullModal(domain: string, branch: string, label: string, onDone: () => void) {
+  modal.set({ kind: "gitPull", pull: { domain, branch, label }, onSuccess: onDone });
 }
 
 export function openWorktreeRemoveModal(site: Site, branch: string) {

@@ -62,7 +62,7 @@ nginx:
                         # proxy and custom-container sites. A project's
                         # .lerd.yaml request_timeout overrides it per site.
 dns:
-  enabled: true          # whether lerd manages DNS (dnsmasq, .test, HTTPS). Asked
+  enabled: true          # whether lerd manages DNS (lerd-dns, .test, HTTPS). Asked
                          # once at first install, then flipped with lerd dns:enable
                          # / dns:disable, never re-prompted. dns:repair re-runs the
                          # setup to fix a broken but enabled resolver.
@@ -71,7 +71,7 @@ dns:
                          # "internal.example.com". An unusable value is refused
                          # and lerd serves .test instead, which lerd doctor
                          # reports rather than applying silently.
-  upstream:              # optional. Pins the upstream DNS servers dnsmasq
+  upstream:              # optional. Pins the upstream DNS servers lerd-dns
     - 192.168.100.129    # forwards non-.test queries to. Leave unset to
                          # auto-detect from the system resolver. Set this when
                          # auto-detection picks the wrong servers (e.g.
@@ -134,6 +134,10 @@ dumps:
                         # requires restarting the FPM container for the value to take
                         # effect (`systemctl --user restart lerd-php<ver>-fpm` or
                         # `lerd restart`).
+  buffer: 5000          # events lerd-ui keeps on disk for the Debug window, about 4.5 KB
+                        # each (5,000 is some 22 MB). Kept between 3000 and 20000. Set with
+                        # `lerd dump buffer`, System → Debug → Settings or MCP
+                        # `diag dumps_buffer`; a running lerd-ui resizes straight away.
 php:
   extensions: [mongodb] # custom PHP extensions (`lerd php:ext`). One declared set,
                         # applied to every PHP image lerd builds: extensions belong
@@ -179,12 +183,14 @@ A portable, self-contained description of a project's local environment. Created
 | `framework_def` | Full framework definition, embedded automatically for custom (non-Laravel) frameworks so the project is portable across machines |
 | `public_dir` | Override for the framework's default document-root subdirectory, e.g. `public_html` for a Laravel skeleton that doesn't use the conventional `public/` folder. Empty means use the framework default |
 | `request_timeout` | nginx request timeout in seconds for this site. Maps to `fastcgi_read_timeout`/`fastcgi_send_timeout` for PHP-FPM sites and `proxy_read_timeout`/`proxy_send_timeout` for proxy and custom-container sites. Overrides the global `nginx.request_timeout`. Omit (or `0`) to inherit the global default of 60s. Raise it for apps with deliberately long-running requests |
+| `front_controller` | When `true`, nginx runs only `index.php` and rewrites every other `.php` URL onto it, for apps whose router owns those paths (GLPI 11). See [A single front controller](./usage/nginx-overrides.md#a-single-front-controller) |
 | `secured` | When `true`, HTTPS is enabled on apply |
 | `domains` | Site hostnames, with or without the TLD (e.g. `[myapp, api]` or `[myapp.test, api.test]`, both register the same pair). The first entry is the primary; additional entries become aliases. Conflict-filtered domains stay in this list on disk but are not registered. A hostname may not contain whitespace, a slash, or nginx punctuation (`{`, `}`, `;`, `#`), since it is written into the generated vhost's `server_name` |
 | `app_url` | Override for `APP_URL` (or the framework's URL key) written to `.env`. Highest priority, it beats the per-machine `sites.yaml` override and the default `<scheme>://<primary-domain>` generator. Use for custom path prefixes, ports, or unrelated hostnames you want shared across machines |
 | `env_overrides` | Map of env var names to templated or static values applied to `.env` on `lerd setup` and to per-worktree `.env` files when worktrees are created. Values may use <code v-pre>{{domain}}</code>, <code v-pre>{{scheme}}</code>, <code v-pre>{{site}}</code>, <code v-pre>{{branch}}</code>, and <code v-pre>{{parent}}</code> placeholders, or be plain strings. When `APP_URL` is in `env_overrides` it takes precedence over the default rewrite; declared keys override defaults, undeclared defaults still apply. The one exception is `DB_DATABASE` on a worktree whose `db_isolated` is true: the isolation flow owns that key and the watcher won't re-render it from the parent's template until isolation is turned back off. See [Env overrides](./features/git-worktrees.md#env-overrides) |
 | `worktree_include` | Paths, relative to the project root, copied from the main repo into every new worktree, for gitignored files the app needs to run (`auth.json`, a `storage/oauth-private.key`, a local config folder). Files and directories both work; a path the worktree already has is left alone, and a path that escapes the project root is ignored. See [Extra files in a worktree](./features/git-worktrees.md#extra-files-in-a-worktree) |
 | `env_passthrough` | Host environment variable names, glob patterns allowed, forwarded from lerd's own process into the one-shot commands it runs in the container (`lerd php`, console commands, composer, tests, tinker, `lerd shell`, MCP). Names only, never values. For an environment exported into the shell by a provider like direnv or sops; a provider that wraps the command sets `LERD_PASSTHROUGH_ENV` instead. See [External environment providers](./usage/php.md#external-environment-providers) |
+| `env_provider` | Host command whose stdout is dotenv lines, for example `infisical export --env=dev --format=dotenv`. lerd runs it on `lerd env`, `lerd start` and, on Linux, the watcher's start on boot, after a one-time approval, and keeps the output in a tmpfs file that PHP loads before the framework boots, for web requests, workers and CLI alike. Provided secrets never land in `.env` or anywhere else on disk. Linux, and macOS on the container runtime. See [External environment providers](./usage/php.md#keeping-secrets-off-disk-env_provider) |
 | `services` | Services to start on apply. Accepts built-in names, custom service names, or full inline definitions |
 | `workers` | Active worker names for the site (e.g. `queue`, `horizon`, `schedule`, `reverb`, `stripe`). Automatically kept in sync by start/stop commands. Used by `lerd start` to restore workers after reinstall |
 | `worker_options` | Values for a worker's tunable options, keyed by worker name then option (e.g. `queue: {queue: high,default,low}`). Written by `lerd queue:start --queue …` and by the dashboard's worker gear; read by every later start, so the project's own queues and limits survive a restart, a reinstall and a fresh clone. See [Worker options](./usage/queue-workers.md#worker-options) |
@@ -379,7 +385,7 @@ The Lerd watcher also monitors `.lerd.yaml` for changes. When you switch branche
 
 `lerd isolate`, the UI PHP version selector, and the MCP `site` tool's `php` action all keep `php_version` in sync when this file exists.
 
-`lerd secure`, `lerd unsecure`, the UI HTTPS toggle, and the MCP `secure`/`unsecure` tools keep `secured` in sync when this file exists.
+`lerd secure`, `lerd unsecure`, the UI HTTPS toggle, and the MCP `secure`/`unsecure` tools keep `secured` in sync. Securing a project that has no `.lerd.yaml` yet creates one to record it, so relinking the project later brings it back on HTTPS; unsecuring never creates the file.
 
 ### Local overrides: `.lerd.local.yaml`
 
@@ -394,7 +400,7 @@ db_isolated: true
 
 The file takes the same fields as `.lerd.yaml`, in the same shapes. Merging is per top-level key: a list replaces the committed list entirely, a map (`env_overrides`, `worker_options`) merges key by key, and everything the local file does not mention keeps the committed value. The file is optional and may exist on its own, without a `.lerd.yaml` next to it.
 
-Add it to `.gitignore`. Lerd writes it in one case only: isolating or sharing a worktree's database records `db_isolated` in that worktree's `.lerd.local.yaml`, keeping every other key in the file as it was, and adds the file to the site's `.git/info/exclude` so it never shows up in `git status`. Lerd never removes it.
+You do not have to gitignore it: whenever the file exists, `lerd link` adds it to the repository's `.git/info/exclude`, so it never shows up in `git status`. Lerd writes it in one case only: isolating or sharing a worktree's database records `db_isolated` in that worktree's `.lerd.local.yaml`, keeping every other key in the file as it was, and excludes it the same way. Lerd never removes it.
 
 Because the committed file stays the source of truth for everything else, commands that persist a setting still write `.lerd.yaml`, and a save never leaks a locally overridden value into it. Changing a setting the local file owns, say running `lerd runtime frankenphp` while the local file pins `runtime`, is refused before anything is written: the local file has to change for that value to change. That includes the pins that also have a dotfile of their own, so `lerd isolate` and `lerd isolate:node` refuse rather than writing a `.php-version` or `.node-version` the next link would undo.
 

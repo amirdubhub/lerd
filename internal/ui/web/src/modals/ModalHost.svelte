@@ -1,12 +1,15 @@
 <script lang="ts">
   import { modal } from '$stores/modals';
   import DomainModal from './DomainModal.svelte';
+  import BrowserLogsModal from './BrowserLogsModal.svelte';
   import GroupModal from './GroupModal.svelte';
   import SiteWizardModal from './SiteWizardModal.svelte';
   import PresetModal from './PresetModal.svelte';
   import RemoteControlModal from './RemoteControlModal.svelte';
   import LANProgressModal from './LANProgressModal.svelte';
   import AddWorktreeModal from './AddWorktreeModal.svelte';
+  import SwitchBranchModal from './SwitchBranchModal.svelte';
+  import PullModal from './PullModal.svelte';
   import RemoveWorktreeModal from './RemoveWorktreeModal.svelte';
   import AddPhpModal from './AddPhpModal.svelte';
   import RebuildPhpModal from './RebuildPhpModal.svelte';
@@ -29,6 +32,7 @@
   import ConfirmTuningRestoreModal from './ConfirmTuningRestoreModal.svelte';
   import ConfirmTuningResetModal from './ConfirmTuningResetModal.svelte';
   import ConfirmSiteUnlinkModal from './ConfirmSiteUnlinkModal.svelte';
+  import ConfirmSiteServiceRemoveModal from './ConfirmSiteServiceRemoveModal.svelte';
   import ConfirmServiceInstallModal from './ConfirmServiceInstallModal.svelte';
   import ChangelogModal from './ChangelogModal.svelte';
   import ErrorModal from './ErrorModal.svelte';
@@ -37,6 +41,8 @@
 
 {#if $modal.kind === 'domain' && $modal.site}
   <DomainModal site={$modal.site} />
+{:else if $modal.kind === 'browserLogs' && $modal.browserLogsSite}
+  <BrowserLogsModal site={$modal.browserLogsSite} />
 {:else if $modal.kind === 'group' && $modal.site}
   <GroupModal site={$modal.site} />
 {:else if $modal.kind === 'link'}
@@ -49,6 +55,10 @@
   <LANProgressModal />
 {:else if $modal.kind === 'worktreeAdd' && $modal.site}
   <AddWorktreeModal site={$modal.site} />
+{:else if $modal.kind === 'branchSwitch' && $modal.site}
+  <SwitchBranchModal site={$modal.site} />
+{:else if $modal.kind === 'gitPull' && $modal.pull}
+  <PullModal domain={$modal.pull.domain} branch={$modal.pull.branch} branchLabel={$modal.pull.label} onDone={$modal.onSuccess} />
 {:else if $modal.kind === 'worktreeRemove' && $modal.site && $modal.branch}
   <RemoveWorktreeModal site={$modal.site} branch={$modal.branch} />
 {:else if $modal.kind === 'phpAdd'}
@@ -93,6 +103,8 @@
   <ConfirmWorkspaceDeleteModal />
 {:else if $modal.kind === 'siteUnlink' && $modal.siteUnlink}
   <ConfirmSiteUnlinkModal />
+{:else if $modal.kind === 'siteServiceRemove' && $modal.siteServiceRemove}
+  <ConfirmSiteServiceRemoveModal />
 {:else if $modal.kind === 'serviceInstall' && $modal.serviceInstall}
   <ConfirmServiceInstallModal />
 {:else if $modal.kind === 'changelog'}

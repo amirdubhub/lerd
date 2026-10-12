@@ -1,6 +1,7 @@
 package siteinfo
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,6 +61,7 @@ type WorkerInfo struct {
 // the *Override flags say which it is so callers can render an "inherited" hint.
 type WorktreeInfo struct {
 	Branch              string
+	GitBranch           string
 	Domain              string
 	Path                string
 	PHPVersion          string
@@ -171,6 +173,10 @@ type EnrichedSite struct {
 
 	// Services
 	Services []string
+	// DeclaredServices is the subset of Services listed in .lerd.yaml, the
+	// only ones the dashboard can remove. The rest come from the env file or
+	// from the services the last `lerd env` recorded for the site.
+	DeclaredServices []string
 	// SuggestedServices are presets the site's packages suggest that it neither
 	// uses nor had dismissed, for the dashboard to offer.
 	SuggestedServices []config.ServiceSuggestion
@@ -381,10 +387,21 @@ func Enrich(s config.Site, flags EnrichFlag) EnrichedSite {
 
 	if flags&EnrichServices != 0 {
 		e.enrichServices()
+		// The registry record has to land before either suggestion pass, or a
+		// service the env reaches only as 127.0.0.1 stays on offer.
+		e.addWiredServices(s)
 		if hasFw {
 			e.SuggestedServices = suggestedServices(fw.PackageServices, e.Services, s.DismissedServices, func(name string) bool {
 				return podman.QuadletInstalled("lerd-" + name)
 			})
+			answered := slices.Concat(e.Services, s.DismissedServices)
+			for _, sg := range e.SuggestedServices {
+				answered = append(answered, sg.Name)
+			}
+			envFile, envFormat := config.EnvFileFor(s.Path)
+			env := envfile.Values(filepath.Join(s.Path, envFile), envFormat)
+			e.SuggestedServices = append(e.SuggestedServices,
+				envSuggestedServices(fw.Env.Services, env, answered, rolesFilledBy(e.Services))...)
 		}
 	}
 
@@ -728,6 +745,7 @@ func (e *EnrichedSite) enrichGit() {
 		for _, wt := range wts {
 			info := WorktreeInfo{
 				Branch:      wt.Branch,
+				GitBranch:   wt.GitBranch,
 				Domain:      wt.Domain,
 				Path:        wt.Path,
 				PHPVersion:  e.PHPVersion,
@@ -783,6 +801,7 @@ func (e *EnrichedSite) enrichServices() {
 			e.Services = append(e.Services, ps.Name)
 			svcSet[ps.Name] = true
 		}
+		e.DeclaredServices = slices.Clone(e.Services)
 	}
 
 	envFile, _ := config.EnvFileFor(e.Path)
@@ -813,12 +832,77 @@ func (e *EnrichedSite) enrichServices() {
 	}
 }
 
+// addWiredServices adds installed services the last `lerd env` recorded, since a
+// loopback env cannot name them. This is usage, not a .lerd.yaml declaration,
+// and a declined service stays off.
+func (e *EnrichedSite) addWiredServices(s config.Site) {
+	if len(s.WiredServices) == 0 {
+		return
+	}
+	have := make(map[string]bool, len(e.Services))
+	for _, name := range e.Services {
+		have[name] = true
+	}
+	for _, name := range s.WiredServices {
+		if name == "" || name == "sqlite" || have[name] || slices.Contains(s.DeclinedServices, name) {
+			continue
+		}
+		// Stopped is still installed: the quadlet file is the signal, not a
+		// running container. Custom services use the same lerd-<name> unit.
+		if !podman.QuadletInstalled("lerd-" + name) {
+			continue
+		}
+		e.Services = append(e.Services, name)
+		have[name] = true
+	}
+}
+
 // suggestedServices is what the site's packages put forward. A dismissed
 // service counts as an answer for its package, so turning down redis does not
 // bring valkey up in its place.
 func suggestedServices(suggested []config.ServiceSuggestion, have, dismissed []string, installed func(string) bool) []config.ServiceSuggestion {
 	answered := func(name string) bool { return slices.Contains(have, name) || slices.Contains(dismissed, name) }
 	return config.PickPackageSuggestions(suggested, answered, installed)
+}
+
+// envSuggestedServices offers the framework services whose detect rules match
+// the env file, so a service taken off a site stays one click from coming back.
+// Only rules naming a present key count: an absent-key rule says nothing about
+// what the project wants. skip holds names already used, dismissed or offered.
+func envSuggestedServices(defs map[string]config.FrameworkServiceDef, env map[string]string, skip []string, covered func(string) bool) []config.ServiceSuggestion {
+	var out []config.ServiceSuggestion
+	for _, name := range slices.Sorted(maps.Keys(defs)) {
+		if slices.Contains(skip, name) || covered(name) {
+			continue
+		}
+		for _, rule := range defs[name].Detect {
+			if rule.Absent || rule.Key == "" || !config.DetectRulesMatch([]config.FrameworkServiceDetect{rule}, env) {
+				continue
+			}
+			out = append(out, config.ServiceSuggestion{Name: name, Reason: "The env file sets " + rule.Key})
+			break
+		}
+	}
+	return out
+}
+
+// rolesFilledBy reports whether a framework service role is already served by
+// one of the site's services, directly or as a drop-in: postgres-pgvector
+// fills postgres, mariadb fills mysql.
+func rolesFilledBy(services []string) func(string) bool {
+	filled := map[string]bool{}
+	for _, name := range services {
+		filled[name] = true
+		filled[config.FamilyOfName(name)] = true
+		if svc, err := config.LoadCustomService(name); err == nil && svc != nil {
+			filled[svc.Preset] = true
+			filled[config.EnvRoleOf(svc)] = true
+		}
+		if p, err := config.LoadPreset(name); err == nil {
+			filled[p.EnvRole] = true
+		}
+	}
+	return func(role string) bool { return filled[role] }
 }
 
 func (e *EnrichedSite) enrichDomainConflicts() {

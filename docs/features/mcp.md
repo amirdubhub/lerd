@@ -18,6 +18,8 @@ Run once after installing lerd:
 lerd mcp:enable-global
 ```
 
+Or turn on **AI assistants (MCP)** under System in the [web UI](./web-ui.md#system), which does the same and turns it off again with `lerd mcp:disable-global`'s teardown.
+
 This registers the lerd MCP server at **user scope**, available in every session regardless of which directory you open, and writes user-scope context files so the assistant knows what lerd tools are available and how to use them.
 
 MCP server registration:
@@ -155,7 +157,7 @@ Either form leaves stdout to the server: anything lerd needs to say while starti
 
 ## Available MCP tools
 
-The MCP surface is **twelve grouped tools**, each driven by an `action` argument. Always pass `action`; start by calling `site` with `action: "list"` to discover sites.
+The MCP surface is **thirteen grouped tools**, each driven by an `action` argument. Always pass `action`; start by calling `site` with `action: "list"` to discover sites.
 
 The server also sends short instructions when a client connects, telling the assistant to use these tools rather than the raw commands they wrap. Clients such as Claude Code load tool schemas only when needed, so without those instructions an assistant would see just a tool named `worktree` and run `git worktree add` itself, skipping the dependency install, branch domain and database isolation that `add` handles.
 
@@ -169,8 +171,9 @@ The server also sends short instructions when a client connects, telling the ass
 | `worker` | `list` (call first), `start`, `stop`, `add`, `remove`, `health`, `heal`, `mode_get`, `mode_set`, `queue_start`, `queue_stop`, `horizon_start`, `horizon_stop`, `reverb_start`, `reverb_stop`, `schedule_start`, `schedule_stop`, `stripe_start`, `stripe_stop`, `stripe_config` |
 | `exec` | `artisan`, `console`, `composer`, `vendor_bins`, `vendor_run`, `commands_list`, `commands_run`, `command_add`, `command_remove` |
 | `framework` | `list`, `add`, `remove`, `prune`, `search`, `update`, `project_new`, `setup` |
-| `diag` | `status`, `doctor`, `doctor_fix`, `site_doctor`, `which`, `check`, `dns_diagnose`, `bug_report`, `analyze_queries`, `route_timing`, `optimize_route`, `dumps_recent`, `dumps_status`, `dumps_clear`, `dumps_toggle`, `profiler_toggle`, `profiler_status`, `profiler_clear`, `profiler_report`, `xdebug_on`, `xdebug_off`, `xdebug_status` |
+| `diag` | `status`, `doctor`, `doctor_fix`, `site_doctor`, `which`, `check`, `dns_diagnose`, `bug_report`, `analyze_queries`, `route_timing`, `optimize_route`, `dumps_recent`, `dumps_status`, `dumps_clear`, `dumps_toggle`, `dumps_buffer`, `browser_events`, `browser_toggle`, `profiler_toggle`, `profiler_status`, `profiler_clear`, `profiler_report`, `xdebug_on`, `xdebug_off`, `xdebug_status` |
 | `logs` | `sources`, `fetch` |
+| `request` | `list` (a site's recent requests and their ids), `lenses` (events per lens for one request, plus the issues they hold: N+1 and slow queries first, then exceptions, error logs, failed HTTP, failed jobs and browser errors), `lens` (one lens's events, paged) |
 | `worktree` | `list`, `add`, `remove`, `wait`, `db_isolate`, `db_share` |
 | `workspace` | `list`, `create`, `rename`, `delete`, `assign`, `move` |
 
@@ -196,13 +199,13 @@ A **site group** (the `site` tool's `group_*` actions) nests a real site under a
 
 ### Service presets carry their own discovery metadata
 
-`preset_list` returns each preset's `category`, `icon` and `admin_for`. `admin_for` names the services a preset's admin UI administers, and it is **not** `depends_on`: phpMyAdmin depends on mysql (satisfied by MariaDB via `env_role`) but administers both, and RedisInsight depends on redis (satisfied by Valkey) while administering both. To answer "which dashboard administers this database", read `admin_for`.
+`preset_list` returns each preset's `category`, `icon`, `admin_for` and `suggest_for`. `admin_for` names the services a preset's admin UI administers, and it is **not** `depends_on`: phpMyAdmin depends on mysql (satisfied by MariaDB via `env_role`) but administers both, and RedisInsight depends on redis (satisfied by Valkey) while administering both. To answer "which dashboard administers this database", read `admin_for`.
 
 `service` start/stop/restart use the same `serviceops` path as the CLI, Web UI, and TUI: `depends_on` resolution (including family / `env_role` drop-ins), reverse-dependent start, soft stop cascade, and `discover_family` / pinned-dependency-host consumer regen. Stop failures surface as errors rather than a silent OK. Do not assume MCP is a thinner StartUnit wrapper.
 
 ### Downloads are disclosed, not started
 
-An assistant is not the one paying for the bandwidth, so the actions that have to fetch a container image (`service` `preset_install`, `update`, `migrate`, `rollback`, `reinstall`, and `runtime` `ext_add`, which rebuilds a PHP image) answer with what they would download instead of downloading it. The answer names the image and its size, read from the registry manifest without pulling anything, and nothing has been fetched at that point. Repeating the call with `confirm: true` goes ahead. An image already in the local store is never disclosed, so the usual case runs straight through. This is the disclosure half of what `LERD_OFFLINE=1` does for the refusal half; see [Image downloads](../usage/lifecycle.md#image-downloads).
+An assistant is not the one paying for the bandwidth, so the actions that have to fetch a container image (`service` `start`, `preset_install`, `update`, `migrate`, `rollback`, `reinstall`, and `runtime` `ext_add`, which rebuilds a PHP image) answer with what they would download instead of downloading it. The answer names the image and its size, read from the registry manifest without pulling anything, and nothing has been fetched at that point. Repeating the call with `confirm: true` goes ahead. An image already in the local store is never disclosed, so the usual case runs straight through. This is the disclosure half of what `LERD_OFFLINE=1` does for the refusal half; see [Image downloads](../usage/lifecycle.md#image-downloads).
 
 ### Worker tuning comes from the framework definition
 
@@ -210,7 +213,7 @@ An assistant is not the one paying for the bandwidth, so the actions that have t
 
 ### Reading logs
 
-The `logs` tool lets an assistant debug a site's logs without opening files by hand. Call `logs` with `action: "sources"` to list every queryable source for a site (`app:<file>` framework logs, `fpm`, `worker:<name>`) plus shared infrastructure (`nginx`, `dns`, `watcher`, `ui`, services, `php<ver>`), then `action: "fetch"` with a `source` and any of `grep` (regex or literal substring), `since`/`until` (relative like `15m`/`2h30m`, or a timestamp), `level` (app logs only), and `lines`. Each `fetch` returns an opaque `cursor`; pass it back as `since` on the next call to receive only the new lines, which is how streaming is modelled over MCP's request/response transport. See [the logs feature page](logs.md) for the full source list, filter semantics, and platform notes.
+The `logs` tool lets an assistant debug a site's logs without opening files by hand. Call `logs` with `action: "sources"` to list every queryable source for a site (`app:<file>` framework logs, `fpm`, `worker:<name>`) plus shared infrastructure (`nginx`, `dns`, `watcher`, `ui`, services, `php<ver>`), then `action: "fetch"` with a `source` and any of `grep` (regex or literal substring), `since`/`until` (relative like `15m`/`2h30m`, or a timestamp), `level` (app logs only), and `lines`. Each `fetch` returns an opaque `cursor`; pass it back as `since` on the next call to receive only the new lines, which is how streaming is modelled over MCP's request/response transport. Passing a worktree's checkout as `path` reads that worktree's own app logs and the logs of the workers started in it. See [the logs feature page](logs.md) for the full source list, filter semantics, and platform notes.
 
 > **Grouped surface:** earlier lerd versions exposed ~80 individual MCP tools (`sites`, `artisan`, `db_set`, …). These were consolidated into the grouped tools above to cut the per-session token cost and sharpen the model's tool selection. Old flat tool names no longer exist; call the group with the matching `action` instead (e.g. `artisan` → `exec` with `action: "artisan"`, `db_set` → `db` with `action: "set"`).
 

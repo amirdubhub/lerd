@@ -18,6 +18,8 @@ Day-to-day lifecycle commands for the entire lerd stack: DNS, nginx, PHP-FPM con
 
 `lerd stop` is the everyday "give my laptop back its CPU" command. `lerd quit` is a full shutdown: use it before a reinstall, a system reboot without autostart, or when you really want lerd out of the way.
 
+Only one of `lerd start`, `lerd stop` and `lerd quit` runs at a time, whether it comes from the CLI, the Web UI or the tray. A second one waits for the first to finish. While one is running, the `php`, `composer` and other shims leave the Podman Machine alone, so a worker that calls `lerd php` during a start (a Vite dev server running Wayfinder, for example) cannot restart the VM under it.
+
 ---
 
 ## `lerd start`
@@ -39,7 +41,7 @@ Walks the install in dependency order:
 A live spinner shows the per-unit progress. If a single SSL vhost references a missing certificate file, lerd switches that site back to HTTP automatically and continues; one broken cert no longer blocks the whole nginx start.
 
 ::: info After a reinstall
-If you ran `lerd uninstall` and then reinstalled, worker units and service quadlets are recreated by `lerd start` from each site's `.lerd.yaml`. Sites with a committed `.lerd.yaml` come back fully wired up. Sites without one need their workers restarted manually.
+If you ran `lerd uninstall` and then reinstalled, worker units and service quadlets are recreated by `lerd start` from each site's `.lerd.yaml`, and so is the container of a site on the FrankenPHP runtime, also after a `lerd sites:restore`. Sites with a committed `.lerd.yaml` come back fully wired up. Sites without one need their workers restarted manually.
 :::
 
 ::: info After the binary moves
@@ -49,7 +51,7 @@ The `lerd-ui`, `lerd-watcher` and `lerd-tray` services and the shims on your `PA
 ::: info Deleted project directories are auto-cleaned
 `lerd-watcher` removes sites from `sites.yaml` whenever their project directory disappears on disk. Two paths do this:
 
-- **Instant**: fsnotify on every parked directory (configured via `lerd park`). When a direct subdirectory gets deleted, the corresponding site is unlinked within milliseconds.
+- **Instant**: fsnotify on every parked directory (configured via `lerd park`). When a direct subdirectory gets deleted, the corresponding site is unlinked within milliseconds. The watcher reads the parked list again every few seconds, so a directory parked or unparked while lerd is running is watched, or dropped, without a restart.
 - **Periodic**: every 30 seconds the watcher sweeps the full site registry (parked and non-parked) and removes any site whose path no longer exists. The UI refreshes via the sites eventbus so the dashboard reflects the removal without a manual page reload.
 
 Either way the site gets the same teardown `lerd unlink` performs: its workers are stopped, its shares closed, its vhost and certificates dropped, any per-site container removed, and its recorded request timings forgotten. Its worktrees go with it, so the branch subdomains stop being served and their workers, LAN shares and tunnels are released too. Isolated worktree databases are kept, as they are when you remove a worktree by hand, so nothing you have not backed up is deleted behind your back.
@@ -87,8 +89,9 @@ lerd start --dry-run
 
 ### In the dashboard
 
-Installing a service, updating, migrating, rolling back or reinstalling one, and
-installing or rebuilding a PHP version all ask first when the image they need is
+Installing a service, starting a built-in one for the first time, adding a
+suggested service to a site, updating, migrating, rolling back or reinstalling
+one, and installing or rebuilding a PHP version all ask first when the image they need is
 not already on the machine:
 
 > **Download required**
@@ -102,7 +105,8 @@ the usual case for that.
 
 ### From an assistant
 
-The MCP tools that would fetch an image (installing a service preset, updating,
+The MCP tools that would fetch an image (starting a service whose image is not
+here yet, installing a service preset, updating,
 migrating, rolling back or reinstalling a service, and adding a PHP extension,
 which rebuilds the image) report the image and its size back to the assistant
 and download nothing. It takes a second call carrying `confirm: true` to go
@@ -131,6 +135,10 @@ ask for them yourself:
 lerd php:rebuild
 ```
 
+That includes `lerd install` and the reinstall a `lerd update` runs: offline,
+they keep the PHP images you have and say so instead of rebuilding them, and
+the download list they print leaves out every pull offline mode skips.
+
 `lerd php:rebuild` and `lerd fetch` always run, offline or not: they exist
 because you asked for the download.
 
@@ -147,9 +155,10 @@ Stops everything `lerd start` started **except** the Web UI, watcher, tray, and 
 A few important details:
 
 - **The DNS forwarder stays up.** `lerd-dns` is treated as install-level plumbing: the system resolver keeps pointing `.test` at it until `lerd uninstall`, so stopping it would leave the resolver aimed at a dead port and make `.test` lookups stall. It is only torn down by `lerd quit` or `lerd uninstall`.
-- **Manually paused services are remembered.** If you stopped Mailpit earlier with `lerd service stop mailpit`, then `lerd stop` + `lerd start` will not bring Mailpit back. The pause flag survives the cycle.
+- **Manually paused services are remembered.** If you stopped Mailpit earlier with `lerd service stop mailpit`, then `lerd stop` + `lerd start` will not bring Mailpit back. The pause flag survives the cycle. Starting it again on purpose clears the flag, whether with `lerd service start` or because `lerd env` or `lerd link` brought it up for a site that needs it.
 - **Pinned services start anyway.** A `lerd service pin <name>` overrides auto-stop logic; pinned services are always started by `lerd start` regardless of which sites are active.
 - **Worker state is preserved.** Workers running before `lerd stop` are restarted by the next `lerd start`; workers you manually stopped stay stopped.
+- **Loaded SSH keys stay loaded.** The `lerd-ssh-agent` from `lerd auth ssh` keeps running, so a stop and start does not ask for your key passphrases again.
 
 ---
 
@@ -162,11 +171,12 @@ lerd quit
 The full off-switch:
 
 1. Runs everything `lerd stop` does.
-2. Stops `lerd-ui` (Web UI).
-3. Stops `lerd-watcher`.
-4. Kills the system tray process.
-5. Stops the `lerd-dns` forwarder. Unlike `lerd stop`, quit is a full teardown, so it takes DNS down too. The watcher is stopped first (step 3) because it is the only thing that would restart `lerd-dns`.
-6. **macOS only:** stops the Podman Machine VM.
+2. Stops the workers of every site's git worktrees, which `lerd stop` leaves running. Their units are kept, so the next `lerd start` brings them back. It also stops the `lerd-ssh-agent` started by [`lerd auth ssh`](../reference/commands.md), clearing the keys it held; run `lerd auth ssh` again to load them.
+3. Stops `lerd-ui` (Web UI).
+4. Stops `lerd-watcher`.
+5. Kills the system tray process.
+6. Stops the `lerd-dns` forwarder. Unlike `lerd stop`, quit is a full teardown, so it takes DNS down too. The watcher is stopped first (step 4) because it is the only thing that would restart `lerd-dns`.
+7. **macOS only:** stops the Podman Machine VM.
 
 After `lerd quit` there are no lerd processes left running. On macOS the Podman Machine VM is also shut down, so `lerd start` will bring it back up on the next run. This is the right command before a reinstall or before pulling a major update. Before a reboot it is optional on macOS, where the watcher now runs the same teardown for you.
 
@@ -295,7 +305,7 @@ lerd status
 
 Shows a live snapshot: DNS reachability, nginx, PHP-FPM containers, watcher, host tools, services, certificate expiry, and LAN exposure. Run it after every `lerd start` to confirm everything is healthy. See [Troubleshooting](../troubleshooting.md) if anything is reported as down.
 
-The `[Tools]` section lists the host binaries lerd manages (Composer, fnm, mkcert) with their installed versions, and flags any that differ from the versions lerd currently pins. The same information appears in the web UI under System > Tools, where the pending version on a tool's card is a button that updates that one tool. Apply pending updates from the terminal with:
+The `[Tools]` section lists the host binaries lerd manages (Composer, mise, fnm, mkcert) with their installed versions, and flags any that differ from the versions lerd currently pins. The same information appears in the web UI under System > Tools, where the pending version on a tool's card is a button that updates that one tool. Apply pending updates from the terminal with:
 
 ```bash
 lerd tools:update
@@ -343,7 +353,7 @@ Where a digest is given the download is checked against it and rejected on a mis
 | `lerd start` fails with an overlay / graph-driver storage error (macOS) | `lerd machine reset` |
 | lerd's VM is holding more host disk than it uses (macOS) | `lerd machine reclaim` |
 | Verify everything's healthy | `lerd status` |
-| Update Composer / fnm / mkcert to their pinned versions | `lerd tools:update` |
+| Update Composer / mise / fnm / mkcert to their pinned versions | `lerd tools:update` |
 | Uninstall a service entirely (data preserved) | `lerd service remove <name>` |
 | Uninstall and wipe data (snapshots the databases first) | `lerd service remove <name> --purge` |
 | Reinstall a service in place | `lerd service reinstall <name>` |

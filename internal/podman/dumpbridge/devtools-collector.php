@@ -316,6 +316,28 @@ function emit_with(string $kind, array $data, array $src, array $trace): void
     }
 }
 
+// request_end reports what a web request cost PHP: how long it ran, its peak
+// memory and, when nginx says when it handed the request on, how long it waited
+// for a free FPM worker. It runs at shutdown, after the response is sent.
+function request_end(): void
+{
+    try {
+        $start = isset($_SERVER['REQUEST_TIME_FLOAT']) ? (float) $_SERVER['REQUEST_TIME_FLOAT'] : 0.0;
+        if ($start <= 0) {
+            return;
+        }
+        $data = [
+            'time_ms'     => round((microtime(true) - $start) * 1000, 3),
+            'memory_peak' => memory_get_peak_usage(true),
+        ];
+        if (!empty($_SERVER['LERD_NGINX_SENT'])) {
+            $data['queue_ms'] = max(0.0, round(($start - (float) $_SERVER['LERD_NGINX_SENT']) * 1000, 3));
+        }
+        emit('request', $data);
+    } catch (\Throwable $_) {
+    }
+}
+
 // render_var renders one variable to the text a dump shows, through Symfony's
 // cloner when the project has it and through print_r when it does not. Every
 // capture that ships a whole value goes through here, so dump(), dd() and a
@@ -810,11 +832,18 @@ function seams(): array
         return $parsed;
     }
     $parsed = [];
-    // The mounted path is where lerd writes it; the override exists so the
-    // parsing and extraction can be exercised without that mount.
+    // The container mounts the assets at a fixed path; a PHP running on the
+    // host has no such directory, so the location comes from the ini the way
+    // the debug bridge reads it, and only then falls back to the mount. The
+    // env override exists so the parsing and extraction can be exercised
+    // without either.
     $path = getenv('LERD_DEVTOOLS_SEAMS');
     if (!is_string($path) || $path === '') {
-        $path = '/usr/local/etc/lerd/devtools-seams.conf';
+        $assets = \get_cfg_var('lerd.assets_dir');
+        if (!is_string($assets) || $assets === '') {
+            $assets = '/usr/local/etc/lerd';
+        }
+        $path = $assets . '/devtools-seams.conf';
     }
     $lines = @file($path, \FILE_IGNORE_NEW_LINES | \FILE_SKIP_EMPTY_LINES);
     if (!is_array($lines)) {

@@ -1,19 +1,22 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import DetailPanel from '$components/DetailPanel.svelte';
   import DetailHeader from '$components/DetailHeader.svelte';
-  import DetailTabs, { type TabItem } from '$components/DetailTabs.svelte';
+  import DetailTabs from '$components/DetailTabs.svelte';
   import StatusPill from '$components/StatusPill.svelte';
   import DetailButton from '$components/DetailButton.svelte';
   import DumpsTab from '$tabs/DumpsTab.svelte';
   import QueriesLens from '$components/QueriesLens.svelte';
   import KindLens from '$components/KindLens.svelte';
   import DebugDisabled from '$components/DebugDisabled.svelte';
+  import BrowserLens from '$components/BrowserLens.svelte';
   import { status as dumpsStatusValue, refreshStatus, togglePassthrough } from '$stores/dumps';
+  import DebugSettings from './DebugSettings.svelte';
   import { refreshDevtoolsStatus, debugCaptureEnabled, setDebugCapture } from '$stores/queries';
-  import { debugLens, type DebugLens } from '$stores/debugLens';
+  import { debugLens, debugLensTabs, showTests, type DebugLens } from '$stores/debugLens';
   import { sites } from '$stores/sites';
-  import { countKinds, debugEvents } from '$stores/debugEvents';
+  import { provideLensCounts } from '$stores/debugEvents';
+  import { createCounts } from '$lib/lens';
   import { m } from '../../paraglide/messages.js';
 
   // The global view aggregates every site; Cache comes solely from the Laravel
@@ -22,22 +25,23 @@
   // HttpClient seams).
   const anyLaravel = $derived($sites.some((s) => (s.framework ?? '').toLowerCase() === 'laravel'));
   const laravelOnly: DebugLens[] = ['cache'];
-  const counts = $derived(countKinds($debugEvents));
+  // Every site's badges, counted by lerd-ui and shared with the lenses below.
+  const kindCounts = createCounts();
+  provideLensCounts(kindCounts);
+  onDestroy(() => kindCounts.destroy());
+  $effect(() => kindCounts.set({ tests: $showTests }));
+  const countsStore = kindCounts.counts;
+  const counts = $derived($countsStore);
 
-  type Lens = DebugLens;
-  const tabs = $derived<TabItem<Lens>[]>([
-    { id: 'dumps', label: m.debug_tab_dumps(), count: counts['dump'] },
-    { id: 'queries', label: m.debug_tab_queries(), count: counts['query'] },
-    { id: 'jobs', label: m.debug_tab_jobs(), count: counts['job'] },
-    { id: 'views', label: m.debug_tab_views(), count: counts['view'] },
-    { id: 'mail', label: m.debug_tab_mail(), count: counts['mail'] },
-    { id: 'cache', label: m.debug_tab_cache(), hidden: !anyLaravel, count: counts['cache'] },
-    { id: 'events', label: m.debug_tab_events(), count: counts['event'] },
-    { id: 'http', label: m.debug_tab_http(), count: counts['http'] },
-    { id: 'logs', label: m.debug_tab_logs(), count: counts['log'] },
-    { id: 'exceptions', label: m.debug_tab_exceptions(), count: counts['exception'] },
-    { id: 'messages', label: m.debug_tab_messages(), count: counts['message'] }
-  ]);
+  // Settings sits after the lenses, held here so the site Debug tab, which
+  // shares the remembered lens, never lands on it.
+  let settingsOpen = $state(false);
+  const tabs = $derived([...debugLensTabs(counts, anyLaravel), { id: 'settings', label: m.common_settings(), group: 'settings' }]);
+  const active = $derived(settingsOpen ? 'settings' : $debugLens);
+  function pick(id: string) {
+    settingsOpen = id === 'settings';
+    if (!settingsOpen) debugLens.set(id as DebugLens);
+  }
 
   $effect(() => {
     if (!anyLaravel && laravelOnly.includes($debugLens)) debugLens.set('queries');
@@ -96,8 +100,16 @@
   {#if !$debugCaptureEnabled}
     <DebugDisabled />
   {:else}
-    <DetailTabs {tabs} active={$debugLens} onchange={(id) => debugLens.set(id)} />
-    {#if $debugLens === 'dumps'}
+    <DetailTabs {tabs} {active} onchange={pick} />
+    {#if settingsOpen}
+    <div class="flex-1 min-h-0 overflow-y-auto">
+      <DebugSettings />
+    </div>
+    {:else if $debugLens === 'browser'}
+    <div class="flex-1 min-h-0 overflow-hidden">
+      <BrowserLens />
+    </div>
+    {:else if $debugLens === 'dumps'}
     <div class="px-3 sm:px-5 py-2 space-y-2 shrink-0 text-xs text-gray-500 dark:text-gray-400">
       <p>
         {m.dumps_bridge_description()}
@@ -122,7 +134,7 @@
         {#if switchingPassthrough}
           <span class="text-[11px] text-amber-600 dark:text-amber-400">{m.dumps_bridge_passthroughRestarting()}</span>
         {:else}
-          <span class="text-[11px] text-gray-400 dark:text-gray-500">{m.dumps_bridge_passthroughHint()}</span>
+          <span class="text-[11px] text-gray-500 dark:text-gray-400">{m.dumps_bridge_passthroughHint()}</span>
         {/if}
       </div>
     </div>

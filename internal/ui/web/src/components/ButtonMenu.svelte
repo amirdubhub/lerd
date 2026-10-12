@@ -18,7 +18,7 @@
   // Shared with the other controls that sit in the same action row, so a button
   // beside the menu is the same button.
   export const buttonMenuBaseClass =
-    'inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 transition-colors disabled:opacity-50';
+    'inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 text-xs font-medium px-3 py-1.5 transition-colors disabled:opacity-50';
 
   export const buttonMenuToneClass: Record<DetailButtonTone, string> = {
     primary: 'bg-lerd-red hover:bg-lerd-redhov text-lerd-onred',
@@ -45,8 +45,11 @@
     // and the dropdown toggle (or to the right of a lone primary button).
     onSettings?: () => void;
     settingsTitle?: string;
+    // An action kept in the group as an icon button, between the primary button
+    // and the dropdown, rather than folded into the menu.
+    inline?: ButtonMenuAction;
   }
-  let { actions, busy = false, menuLabel, onSettings, settingsTitle }: Props = $props();
+  let { actions, busy = false, menuLabel, onSettings, settingsTitle, inline }: Props = $props();
 
   const primary = $derived(actions[0]);
   const rest = $derived(actions.slice(1));
@@ -99,7 +102,7 @@
   <button
     type="button"
     onclick={onSettings}
-    class="{baseBtn} border-l border-black/10 dark:border-white/10 px-1.5 {buttonMenuToneClass[tone]}"
+    class="{baseBtn} border-l border-l-black/10 dark:border-l-white/10 px-1.5 {buttonMenuToneClass[tone]}"
     disabled={busy}
     aria-label={settingsTitle ?? m.common_settings()}
     title={settingsTitle ?? m.common_settings()}
@@ -112,12 +115,26 @@
   </button>
 {/snippet}
 
+{#snippet inlineButton(a: ButtonMenuAction, groupTone: DetailButtonTone)}
+  <button
+    type="button"
+    onclick={a.onclick}
+    class="{baseBtn} border-l border-l-black/10 dark:border-l-white/10 px-1.5 {buttonMenuToneClass[a.tone ?? groupTone]}"
+    disabled={a.disabled || busy}
+    aria-label={a.title ?? a.label}
+    title={a.title ?? a.label}
+    data-testid="button-menu-inline-{a.id}"
+  >
+    {#if a.icon}{@render a.icon()}{/if}
+  </button>
+{/snippet}
+
 {#if actions.length === 0}
   {''}
 {:else if actions.length === 1}
   {@const only = actions[0]}
   {@const tone = only.tone ?? 'secondary'}
-  {@const lead = onSettings ? 'rounded-l-lg' : 'rounded-lg'}
+  {@const lead = onSettings || inline ? 'rounded-l-lg' : 'rounded-lg'}
   <div class="inline-flex">
     {#if only.href}
       <a
@@ -144,6 +161,9 @@
           {only.label}
         {/if}
       </button>
+    {/if}
+    {#if inline}
+      {@render inlineButton(inline, tone)}
     {/if}
     {#if onSettings}
       {@render cog(tone)}
@@ -178,13 +198,16 @@
         {/if}
       </button>
     {/if}
+    {#if inline}
+      {@render inlineButton(inline, tone)}
+    {/if}
     {#if onSettings}
       {@render cog(tone)}
     {/if}
     <button
       type="button"
       onclick={toggle}
-      class="{baseBtn} rounded-r-lg border-l border-black/10 dark:border-white/10 px-1.5 {buttonMenuToneClass[tone]}"
+      class="{baseBtn} rounded-r-lg border-l border-l-black/10 dark:border-l-white/10 px-1.5 {buttonMenuToneClass[tone]}"
       aria-haspopup="menu"
       aria-expanded={open}
       aria-label={menuLabel ?? m.common_moreActions()}

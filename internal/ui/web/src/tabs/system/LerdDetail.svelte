@@ -1,4 +1,7 @@
 <script lang="ts">
+  import DetailHeader from '$components/DetailHeader.svelte';
+  import EditorPicker from '$components/EditorPicker.svelte';
+  import { editors, setGlobalEditor } from '$stores/editors';
   import { onMount } from 'svelte';
   import CheckUpdatesButton from '$components/CheckUpdatesButton.svelte';
   import { version, loadVersion } from '$stores/version';
@@ -22,9 +25,11 @@
     startOnDashboardOpen,
     toggleStartOnDashboardOpen,
     betaUpdates,
-    toggleBetaUpdates
+    toggleBetaUpdates,
+    mcpGlobal,
+    toggleMCP
   } from '$stores/autostart';
-  import { idleEnabled, idleTimeoutMinutes, loadIdle, saveIdle } from '$stores/idle';
+  import { idleEnabled, idleTimeoutMinutes, idleServices, loadIdle, saveIdle } from '$stores/idle';
   import { setStreamingEnabled } from '$stores/workspaces';
   import Toggle from '$components/Toggle.svelte';
   import DetailButton from '$components/DetailButton.svelte';
@@ -87,6 +92,15 @@
       idleBusy = false;
     }
   }
+  async function onToggleIdleServices() {
+    idleBusy = true;
+    try {
+      await saveIdle($idleEnabled, $idleTimeoutMinutes, !$idleServices);
+    } finally {
+      idleBusy = false;
+    }
+  }
+
   async function onSaveIdleTimeout() {
     const v = Math.max(1, Math.floor(Number(idleMinutesInput) || 0));
     if (v === $idleTimeoutMinutes) return;
@@ -118,6 +132,17 @@
       await toggleTray(!$trayEnabled);
     } finally {
       trayBusy = false;
+    }
+  }
+
+  let mcpBusy = $state(false);
+  let mcpFailed = $state(false);
+  async function onToggleMCP() {
+    mcpBusy = true;
+    try {
+      mcpFailed = !(await toggleMCP(!$mcpGlobal));
+    } finally {
+      mcpBusy = false;
     }
   }
 
@@ -201,18 +226,18 @@
   }
 </script>
 
-<div class="flex-1 overflow-y-auto">
-  <div class="flex flex-wrap items-center justify-between gap-y-2 px-3 py-1.5 page-header">
-    <span class="font-semibold text-gray-900 dark:text-white text-base">{m.system_lerd()}</span>
-    <VersionPill />
-  </div>
+<div class="flex-1 flex flex-col min-h-0">
+  <DetailHeader title={m.system_lerd()}>
+    {#snippet trailing()}<VersionPill />{/snippet}
+  </DetailHeader>
 
-  <div class="p-3 space-y-3 @container">
+  <div class="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 @container">
     <div class="grid grid-cols-1 @3xl:grid-cols-2 gap-3">
     <!-- One grid, with each row pairing cards of about the same height, so a
          card never stretches around empty space and a row never ends with a
-         gap. Tray has no partner and takes the full row. The breakpoint reads
-         the pane, not the window, since the sidebar can leave half a screen. -->
+         gap. Idle-Suspend is the tallest and takes a full row, as does Tray when
+         the Editor beside it is hidden off the host. The breakpoint reads the
+         pane, not the window, since the sidebar can leave half a screen. -->
     <SettingsCard>
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0 text-sm">
@@ -299,7 +324,12 @@
     <SettingsCard>
       <div class="flex items-center justify-between mb-2">
         <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{m.system_theme_title()}</span>
-        <PaletteSwitcher />
+        <div class="flex items-center gap-2">
+          {#if $accessMode.localControl}
+            <DetailButton onclick={() => (importThemeOpen = true)}>{m.system_theme_importAction()}</DetailButton>
+          {/if}
+          <PaletteSwitcher />
+        </div>
       </div>
       <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_theme_description()}</p>
       {#each userPalettes as p (p.id)}
@@ -338,7 +368,7 @@
       {#each $paletteErrors as e (e.file)}
         <p class="mt-2 text-xs text-red-600 dark:text-red-400"><span class="font-mono">{e.file}</span>: {e.error}</p>
       {/each}
-      <div class="flex items-center justify-between gap-3 mt-3">
+      <div class="mt-2">
         <div class="flex items-start gap-2 text-xs text-gray-500 dark:text-gray-400">
           <Icon name="camera" class="w-3.5 h-3.5 shrink-0 mt-0.5 text-lerd-red" />
           <p class="leading-relaxed">
@@ -350,51 +380,29 @@
             <a href={shareOnReddit} target="_blank" rel="noopener" class="font-medium text-lerd-red hover:text-lerd-redhov underline-offset-2 hover:underline">Reddit</a>
           </p>
         </div>
-        {#if $accessMode.localControl}
-          <DetailButton onclick={() => (importThemeOpen = true)}>{m.system_theme_importAction()}</DetailButton>
-        {/if}
       </div>
 
     </SettingsCard>
 
     <SettingsCard>
       <div class="flex items-center justify-between gap-3 mb-2">
-        <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{m.system_idle_title()}</span>
+        <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{m.system_streaming_title()}</span>
         {#if $accessMode.localControl}
           <Toggle
-            on={$idleEnabled}
-            loading={idleBusy}
-            onclick={onToggleIdle}
-            title={$idleEnabled ? m.system_idle_toggleOff() : m.system_idle_toggleOn()}
+            on={streamingEnabled}
+            loading={streamingBusy}
+            onclick={onToggleStreaming}
+            title={streamingEnabled ? m.system_streaming_toggleOff() : m.system_streaming_toggleOn()}
           />
         {:else}
           <StatusPill
             size="sm"
-            tone={$idleEnabled ? 'ok' : 'muted'}
-            label={$idleEnabled ? m.common_enabled() : m.common_disabled()}
+            tone={streamingEnabled ? 'ok' : 'muted'}
+            label={streamingEnabled ? m.common_enabled() : m.common_disabled()}
           />
         {/if}
       </div>
-      <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_idle_description()}</p>
-      <div class="flex items-center justify-between gap-4 mt-3">
-        <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_idle_timeoutLabel()}</p>
-        {#if $accessMode.localControl}
-          <div class="flex items-center gap-2">
-            <input
-              type="number"
-              min="1"
-              bind:value={idleMinutesInput}
-              onblur={onSaveIdleTimeout}
-              onkeydown={(e) => e.key === 'Enter' && onSaveIdleTimeout()}
-              disabled={idleBusy}
-              class="text-sm bg-white dark:bg-lerd-card border border-gray-200 dark:border-lerd-border rounded-lg px-3 py-1.5 w-20 text-gray-700 dark:text-gray-200 focus:outline-hidden focus:border-lerd-red/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            />
-            <span class="text-xs text-gray-500 dark:text-gray-400">{m.system_idle_minutes()}</span>
-          </div>
-        {:else}
-          <span class="text-xs text-gray-500 dark:text-gray-400">{idleMinutesInput} {m.system_idle_minutes()}</span>
-        {/if}
-      </div>
+      <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_streaming_description()}</p>
     </SettingsCard>
 
     <SettingsCard>
@@ -420,23 +428,26 @@
 
     <SettingsCard>
       <div class="flex items-center justify-between gap-3 mb-2">
-        <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{m.system_streaming_title()}</span>
+        <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{m.system_mcp_title()}</span>
         {#if $accessMode.localControl}
           <Toggle
-            on={streamingEnabled}
-            loading={streamingBusy}
-            onclick={onToggleStreaming}
-            title={streamingEnabled ? m.system_streaming_toggleOff() : m.system_streaming_toggleOn()}
+            on={$mcpGlobal}
+            loading={mcpBusy}
+            onclick={onToggleMCP}
+            title={$mcpGlobal ? m.system_mcp_toggleOff() : m.system_mcp_toggleOn()}
           />
         {:else}
           <StatusPill
             size="sm"
-            tone={streamingEnabled ? 'ok' : 'muted'}
-            label={streamingEnabled ? m.common_enabled() : m.common_disabled()}
+            tone={$mcpGlobal ? 'ok' : 'muted'}
+            label={$mcpGlobal ? m.common_enabled() : m.common_disabled()}
           />
         {/if}
       </div>
-      <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_streaming_description()}</p>
+      <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_mcp_description()}</p>
+      {#if mcpFailed}
+        <p class="mt-2 text-xs text-red-600 dark:text-red-400">{m.system_mcp_failed()}</p>
+      {/if}
     </SettingsCard>
 
     <SettingsCard>
@@ -481,7 +492,17 @@
       <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_startOnOpen_description()}</p>
     </SettingsCard>
 
-    <SettingsCard class="@3xl:col-span-2">
+    {#if $accessMode.local}
+      <SettingsCard>
+        <div class="flex items-center justify-between gap-3 mb-2">
+          <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{m.editor_settingsTitle()}</span>
+          <EditorPicker value={$editors.global === 'custom' ? ($editors.template ?? '') : $editors.global} onchange={setGlobalEditor} />
+        </div>
+        <p class="text-xs text-gray-500 dark:text-gray-400">{m.editor_settingsDescription()}</p>
+      </SettingsCard>
+    {/if}
+
+    <SettingsCard class={$accessMode.local ? '' : '@3xl:col-span-2'}>
       <div class="flex items-center justify-between gap-3 mb-2">
         <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{m.system_tray_title()}</span>
         {#if $accessMode.localControl}
@@ -500,6 +521,71 @@
         {/if}
       </div>
       <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_tray_description()}</p>
+    </SettingsCard>
+
+    <SettingsCard class="@3xl:col-span-2">
+      <div class="flex items-center justify-between gap-3 mb-2">
+        <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{m.system_idle_title()}</span>
+        {#if $accessMode.localControl}
+          <Toggle
+            on={$idleEnabled}
+            loading={idleBusy}
+            onclick={onToggleIdle}
+            title={$idleEnabled ? m.system_idle_toggleOff() : m.system_idle_toggleOn()}
+          />
+        {:else}
+          <StatusPill
+            size="sm"
+            tone={$idleEnabled ? 'ok' : 'muted'}
+            label={$idleEnabled ? m.common_enabled() : m.common_disabled()}
+          />
+        {/if}
+      </div>
+      <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_idle_description()}</p>
+      <!-- The card spans the row, so its two settings sit side by side. -->
+      <div class="grid @3xl:grid-cols-2 gap-x-8 gap-y-3 mt-3">
+      <div class="flex items-center justify-between gap-4">
+        <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_idle_timeoutLabel()}</p>
+        {#if $accessMode.localControl}
+          <div class="flex items-center gap-2">
+            <input
+              type="number"
+              min="1"
+              aria-label={m.system_idle_timeoutLabel()}
+              bind:value={idleMinutesInput}
+              onblur={onSaveIdleTimeout}
+              onkeydown={(e) => e.key === 'Enter' && onSaveIdleTimeout()}
+              disabled={idleBusy}
+              class="text-sm bg-white dark:bg-lerd-card border border-gray-200 dark:border-lerd-border rounded-lg px-3 py-1.5 w-20 text-gray-700 dark:text-gray-200 focus:outline-hidden focus:border-lerd-red/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+            <span class="text-xs text-gray-500 dark:text-gray-400">{m.system_idle_minutes()}</span>
+          </div>
+        {:else}
+          <span class="text-xs text-gray-500 dark:text-gray-400">{idleMinutesInput} {m.system_idle_minutes()}</span>
+        {/if}
+      </div>
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <p class="text-xs text-gray-700 dark:text-gray-300">{m.system_idle_services()}</p>
+          <p class="text-xs text-gray-500 dark:text-gray-400">{m.system_idle_servicesHint()}</p>
+        </div>
+        {#if $accessMode.localControl}
+          <Toggle
+            on={$idleServices}
+            loading={idleBusy}
+            disabled={!$idleEnabled}
+            onclick={onToggleIdleServices}
+            title={m.system_idle_services()}
+          />
+        {:else}
+          <StatusPill
+            size="sm"
+            tone={$idleServices ? 'ok' : 'muted'}
+            label={$idleServices ? m.common_enabled() : m.common_disabled()}
+          />
+        {/if}
+      </div>
+      </div>
     </SettingsCard>
     </div>
 
@@ -722,7 +808,7 @@
             class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 hover:bg-gray-200 dark:bg-white/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >{m.system_remote_enable()}</button>
           {#if !$lan.exposed}
-            <p class="text-xs text-gray-400 dark:text-gray-500 mt-2">{m.system_remote_exposeFirst()}</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{m.system_remote_exposeFirst()}</p>
           {/if}
         </div>
       {/if}

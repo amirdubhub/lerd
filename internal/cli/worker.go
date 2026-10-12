@@ -262,8 +262,36 @@ func InstallChokidar(sitePath string) error {
 // When persist is false the worker is not added to .lerd.yaml, used by the
 // auto-start path so worktree vite workers don't appear as user-opted entries.
 func WorkerStartForSite(siteName, sitePath, phpVersion, workerName string, w config.FrameworkWorker, persist bool) error {
-	if err := workerStartPreflight(sitePath, workerName, w); err != nil {
+	l, err := prepareWorkerStart(siteName, sitePath, phpVersion, workerName, w)
+	if err != nil || l == nil {
 		return err
+	}
+	if l.reload {
+		// A rewritten unit (e.g. a runtime switch re-pointed the worker at a
+		// different container) only takes effect once systemd re-reads it;
+		// without this, Enable/Start act on the stale cached unit.
+		if err := podman.DaemonReloadFn(); err != nil {
+			feedback.Warn("daemon-reload: %v", err)
+		}
+	}
+	return launchWorker(l, persist)
+}
+
+// workerLaunch is a worker whose unit is written and that waits to be started.
+type workerLaunch struct {
+	siteName, sitePath, workerName   string
+	unitName, label, lifecycleTarget string
+	w                                config.FrameworkWorker
+	// changed is the worker's own unit; reload also covers a conflict torn down.
+	changed, reload bool
+}
+
+// prepareWorkerStart writes a worker's unit without reloading or starting it,
+// so a batch of workers can share one daemon-reload. Nil means the platform
+// cannot run this worker and there is nothing to start.
+func prepareWorkerStart(siteName, sitePath, phpVersion, workerName string, w config.FrameworkWorker) (*workerLaunch, error) {
+	if err := workerStartPreflight(sitePath, workerName, w); err != nil {
+		return nil, err
 	}
 
 	// Skip lifecycle for worker shapes the current platform can't run.
@@ -273,7 +301,7 @@ func WorkerStartForSite(siteName, sitePath, phpVersion, workerName string, w con
 	// behind the original WARN.
 	if ok, reason := workerSupportedOnPlatform(w); !ok {
 		feedback.Warn("worker %s skipped: %s", workerName, reason)
-		return nil
+		return nil, nil
 	}
 
 	command := resolveWorkerCommand(sitePath, workerName, w)
@@ -286,15 +314,16 @@ func WorkerStartForSite(siteName, sitePath, phpVersion, workerName string, w con
 	// in-container workers are unaffected.
 	if w.Host && w.ProjectOrigin {
 		if err := approveHostCommand(siteName, command, fmt.Sprintf("worker %q", workerName)); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	// Stop conflicting workers before starting. Match the new worker's
 	// path so a per-worktree start tears down only the same worktree's
 	// conflicting unit and doesn't touch the parent's.
+	conflictRemoved := false
 	for _, conflict := range w.ConflictsWith {
-		WorkerStopForSite(siteName, sitePath, conflict) //nolint:errcheck
+		conflictRemoved = tearDownWorker(siteName, sitePath, conflict) || conflictRemoved
 	}
 
 	// Handle proxy port assignment and command augmentation.
@@ -322,7 +351,7 @@ func WorkerStartForSite(siteName, sitePath, phpVersion, workerName string, w con
 
 	changed, err := writeWorkerUnitFile(unitName, label, unitSiteName, sitePath, phpVersion, command, restart, w.Schedule, fpmUnit, requiredServiceUnit(sitePath, w), w.Host)
 	if err != nil {
-		return fmt.Errorf("writing worker unit: %w", err)
+		return nil, fmt.Errorf("writing worker unit: %w", err)
 	}
 
 	// Scheduled workers run via a sibling .timer that systemd starts on
@@ -335,13 +364,18 @@ func WorkerStartForSite(siteName, sitePath, phpVersion, workerName string, w con
 		lifecycleTarget = unitName + ".timer"
 	}
 
+	return &workerLaunch{
+		siteName: siteName, sitePath: sitePath, workerName: workerName,
+		unitName: unitName, label: label, lifecycleTarget: lifecycleTarget,
+		w: w, changed: changed, reload: changed || conflictRemoved,
+	}, nil
+}
+
+// launchWorker starts a worker prepareWorkerStart wrote, once the caller has
+// reloaded systemd for a changed unit.
+func launchWorker(l *workerLaunch, persist bool) error {
+	siteName, sitePath, workerName, unitName, label, lifecycleTarget, w, changed := l.siteName, l.sitePath, l.workerName, l.unitName, l.label, l.lifecycleTarget, l.w, l.changed
 	if changed {
-		// A rewritten unit (e.g. a runtime switch re-pointed the worker at a
-		// different container) only takes effect once systemd re-reads it;
-		// without this, Enable/Start act on the stale cached unit.
-		if err := podman.DaemonReloadFn(); err != nil {
-			feedback.Warn("daemon-reload: %v", err)
-		}
 		if err := syncWorkerBootArming(lifecycleTarget); err != nil {
 			feedback.Warn("enable: %v", err)
 		}
@@ -386,7 +420,7 @@ func WorkerStartForSite(siteName, sitePath, phpVersion, workerName string, w con
 	// when persist is false (auto-start path) so worktree workers don't
 	// appear as user-opted entries.
 	if persist {
-		_ = config.AddProjectWorker(sitePath, workerName)
+		recordProjectWorker(sitePath, workerName)
 	}
 
 	return nil
@@ -584,7 +618,7 @@ func workerNames(siteName, sitePath, workerName string) (unit, display string) {
 		return unit, display
 	}
 	s, _ := config.FindSite(siteName)
-	if s == nil || s.Path == "" || s.Path == sitePath {
+	if s == nil || s.Path == "" || config.SamePath(s.Path, sitePath) {
 		return unit, display
 	}
 	wtBase := filepath.Base(sitePath)
@@ -657,6 +691,18 @@ func StopWorkerUnit(unit, label string) error {
 // oneshot .service) or a long-running daemon (.service alone). Missing
 // units are no-ops at this layer.
 func stopWorkerUnit(unitName, label, _ string) error {
+	step, err := removeWorkerUnit(unitName, label)
+	if err != nil {
+		return err
+	}
+	finalizeStopStep(step, podman.DaemonReloadFn())
+	return nil
+}
+
+// removeWorkerUnit is stopWorkerUnit without the daemon-reload, so a caller
+// tearing down several workers can reload once for all of them. The returned
+// step is still open on success.
+func removeWorkerUnit(unitName, label string) (*feedback.Step, error) {
 	if label == "" {
 		label = unitName
 	}
@@ -668,18 +714,29 @@ func stopWorkerUnit(unitName, label, _ string) error {
 
 	if err := services.Mgr.RemoveTimerUnit(unitName); err != nil {
 		step.Fail(err)
-		return fmt.Errorf("removing timer unit file: %w", err)
+		return nil, fmt.Errorf("removing timer unit file: %w", err)
 	}
 	if err := services.Mgr.RemoveServiceUnit(unitName); err != nil {
 		step.Fail(err)
-		return fmt.Errorf("removing unit file: %w", err)
+		return nil, fmt.Errorf("removing unit file: %w", err)
 	}
 	// Drop the macOS exec-mode guard script + pid file (no-op on Linux).
 	// Without this they linger in ~/.local/share/lerd/run/workers after
 	// a normal stop and confuse later mode-migration discovery.
 	removeWorkerExecArtifacts(unitName)
-	finalizeStopStep(step, podman.DaemonReloadFn())
-	return nil
+	return step, nil
+}
+
+// tearDownWorker stops and removes a site's worker unit without the
+// daemon-reload, which the caller owes systemd. Reports whether it went.
+func tearDownWorker(siteName, sitePath, workerName string) bool {
+	unitName, _ := workerNames(siteName, sitePath, workerName)
+	step, err := removeWorkerUnit(unitName, workerName)
+	if err == nil {
+		step.OK("")
+	}
+	killWorkerInContainer(siteName, sitePath, workerName)
+	return err == nil
 }
 
 // finalizeStopStep closes the worker-stop step and only then surfaces a
@@ -825,7 +882,11 @@ func approveHostCommand(siteName, command, what string) error {
 		return nil
 	}
 	if !isInteractive() {
-		return fmt.Errorf("%s: not approved; run it once interactively to confirm, or set host_commands.skip_confirmation: true", what)
+		hint := "run it once interactively to confirm"
+		if what == "env_provider" {
+			hint += ", run `lerd env --yes`"
+		}
+		return fmt.Errorf("%s: not approved; %s, or set host_commands.skip_confirmation: true", what, hint)
 	}
 	fmt.Printf("\nlerd will run this on your host, outside any container:\n\n  %s\n", command)
 	if !promptConfirm(fmt.Sprintf("Run it for %s?", siteName)) {
@@ -875,4 +936,17 @@ func findOrphanedWorkers(siteName string, known map[string]bool) []string {
 		}
 	}
 	return orphans
+}
+
+// recordProjectWorker keeps a started worker so lerd install can restore it. A
+// worktree records it in its git-excluded local override: the committed
+// .lerd.yaml is the branch's, and git refuses to remove a tree it modified.
+func recordProjectWorker(dir, name string) {
+	if parent, ok := config.ParentSiteForWorktreeDir(dir); ok {
+		if err := ensureLocalOverrideExcluded(parent.Path); err == nil {
+			_ = config.AddWorktreeWorker(dir, name)
+		}
+		return
+	}
+	_ = config.AddProjectWorker(dir, name)
 }

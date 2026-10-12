@@ -7,6 +7,9 @@ export interface GitStatus {
   conflicted: number;
   ahead: number;
   behind: number;
+  upstream: boolean;
+  // A branch with no upstream that a push publishes to origin.
+  publishable?: boolean;
 }
 
 export interface GitCheckout extends GitStatus {

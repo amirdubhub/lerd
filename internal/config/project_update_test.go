@@ -79,16 +79,6 @@ func TestSetProjectSecured(t *testing.T) {
 	}
 }
 
-func TestSetProjectSecured_NoOpWhenMissing(t *testing.T) {
-	dir := t.TempDir()
-	if err := SetProjectSecured(dir, true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".lerd.yaml")); !os.IsNotExist(err) {
-		t.Error(".lerd.yaml should not be created")
-	}
-}
-
 // ── SetProjectPHPVersion ────────────────────────────────────────────────────
 
 func TestSetProjectPHPVersion(t *testing.T) {
@@ -718,5 +708,37 @@ func TestAddProjectServicesCreatesTheFileAndSkipsDuplicates(t *testing.T) {
 	}
 	if len(cfg.Services) != 1 {
 		t.Errorf("services = %+v, want a single opensearch entry", cfg.Services)
+	}
+}
+
+func TestRemoveProjectServiceKeepsTheRest(t *testing.T) {
+	dir := t.TempDir()
+	if err := AddProjectServices(dir, []ProjectService{{Name: "mysql"}, {Name: "redis"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveProjectService(dir, "mysql"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadProjectConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 1 || cfg.Services[0].Name != "redis" {
+		t.Errorf("services = %+v, want only redis left", cfg.Services)
+	}
+}
+
+// A service the site only reaches through its .env is not ours to drop, so the
+// caller hears about it instead of getting a silent no-op.
+func TestRemoveProjectServiceRefusesAnUnlistedService(t *testing.T) {
+	dir := t.TempDir()
+	if err := AddProjectServices(dir, []ProjectService{{Name: "redis"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveProjectService(dir, "mysql"); err == nil {
+		t.Fatal("removing an unlisted service succeeded")
+	}
+	if err := RemoveProjectService(t.TempDir(), "mysql"); err == nil {
+		t.Fatal("removing from a project without .lerd.yaml succeeded")
 	}
 }

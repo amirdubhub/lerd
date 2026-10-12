@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -19,6 +18,7 @@ import (
 	gitpkg "github.com/geodro/lerd/internal/git"
 	"github.com/geodro/lerd/internal/linker"
 	"github.com/geodro/lerd/internal/nginx"
+	"github.com/geodro/lerd/internal/platform"
 	"github.com/geodro/lerd/internal/podman"
 	"github.com/geodro/lerd/internal/siteops"
 )
@@ -43,7 +43,7 @@ func init() {
 // main. No-op on macOS, where the upstream is the gvproxy-resolved
 // host.containers.internal hostname rather than a literal IP.
 func RegenerateHostProxyVhostsOnGatewayChange() {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return
 	}
 	reg, err := config.LoadSites()
@@ -175,7 +175,7 @@ var hostIPIsLocal = isLocalInterfaceIP
 // fallback), an unknown gateway, or macOS (gvproxy) all fall back to 0.0.0.0,
 // which always binds. Env-only: pure Vite reads --host, not this var.
 func hostProxyBindAddr() string {
-	if runtime.GOOS == "darwin" {
+	if platform.Current.UsesMachineVM {
 		return "0.0.0.0"
 	}
 	if ip := hostGatewayBindIP(); ip != "" && hostIPIsLocal(ip) {
@@ -345,6 +345,22 @@ func isNodeProject(dir string) bool {
 	return false
 }
 
+// rubyShimDirs returns the Ruby version-manager shim dirs present under home
+// for a Ruby site. Host workers run with a fixed PATH, so a bundle installed
+// through mise, rbenv or asdf would otherwise not resolve.
+func rubyShimDirs(sitePath, home string) []string {
+	if !fileExists(filepath.Join(sitePath, "Gemfile")) && !fileExists(filepath.Join(sitePath, "config.ru")) {
+		return nil
+	}
+	var dirs []string
+	for _, d := range []string{".local/share/mise/shims", ".rbenv/shims", ".asdf/shims"} {
+		if p := filepath.Join(home, d); fileExists(p) {
+			dirs = append(dirs, p)
+		}
+	}
+	return dirs
+}
+
 // reservedHostPorts returns host ports already claimed by other host-proxy
 // sites in the registry, so two sites never get assigned the same port even
 // when the other site's dev server isn't currently running. exceptSite is
@@ -502,17 +518,35 @@ func StartHostProxyWorktreeServer(site config.Site, wtPath string) error {
 // host-mode worker (launchd/fnm on macOS), reusing the standard worker
 // machinery for auto-restart, logs, and health. No-op in proxy-only mode.
 func startHostProxyWorker(site config.Site, proxy *config.ProxyConfig) {
+	l := prepareHostProxyStart(site, proxy)
+	if l == nil {
+		return
+	}
+	if err := podman.DaemonReloadIfNeeded(l.reload); err != nil {
+		feedback.Warn("daemon-reload: %v", err)
+	}
+	if err := launchWorker(l, false); err != nil {
+		feedback.Warn("starting dev server: %v", err)
+	}
+}
+
+// prepareHostProxyStart writes the dev server's unit without reloading or
+// starting it; nil when the proxy runs no command or the command is refused.
+func prepareHostProxyStart(site config.Site, proxy *config.ProxyConfig) *workerLaunch {
 	w, ok := hostProxyWorker(proxy)
 	if !ok {
-		return
+		return nil
 	}
 	if err := gateHostProxyAutostart(site, proxy.Command); err != nil {
 		feedback.Warn("dev server not started: %v", err)
-		return
+		return nil
 	}
-	if err := WorkerStartForSite(site.Name, site.Path, "", hostProxyWorkerName, w, false); err != nil {
+	l, err := prepareWorkerStart(site.Name, site.Path, "", hostProxyWorkerName, w)
+	if err != nil {
 		feedback.Warn("starting dev server: %v", err)
+		return nil
 	}
+	return l
 }
 
 // gateHostProxyAutostart authorises auto-(re)starting a host-proxy dev command

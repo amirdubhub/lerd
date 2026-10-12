@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -331,12 +332,9 @@ var nmcliDNSFunc = func() []string {
 	return parseNmcliLines(string(out))
 }
 
-// defaultUpstreamFallback returns the last-resort dnsmasq upstream when no
-// system-detected nameservers are usable. On Linux, pasta's 169.254.1.1
-// bridges into the host resolver and preserves .test routing.
-func defaultUpstreamFallback() []string {
-	return []string{pastaDefaultForwarder}
-}
+// defaultUpstreamFallback is nil: lerd-dns runs on the host, where pasta's
+// 169.254.1.1 does not exist, so with no usable nameserver it forwards nothing.
+func defaultUpstreamFallback() []string { return nil }
 
 // ReadContainerDNS returns DNS servers for aardvark-dns on the lerd network,
 // preferring pasta's info.json (typically 169.254.1.1) and falling back to
@@ -396,6 +394,45 @@ func readUpstreamDNS() []string {
 		}
 	}
 	return nmcliDNSFunc()
+}
+
+// hostUpstreamDNS is what lerd-dns forwards to. It runs on the host, so unlike
+// the container network it can reach a local resolver on loopback; only
+// systemd-resolved's stubs are dropped, since resolved routes queries back here.
+func hostUpstreamDNS() []string {
+	if servers := configuredUpstreamDNS(); len(servers) > 0 {
+		return servers
+	}
+	for _, path := range resolvPaths {
+		if servers := parseHostNameservers(path); len(servers) > 0 {
+			return servers
+		}
+	}
+	return nmcliDNSFunc()
+}
+
+func parseHostNameservers(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var servers []string
+	for _, line := range strings.Split(string(data), "\n") {
+		ip, ok := strings.CutPrefix(strings.TrimSpace(line), "nameserver ")
+		if !ok {
+			continue
+		}
+		ip = strings.TrimSpace(ip)
+		if ip == "127.0.0.53" || ip == "127.0.0.54" {
+			continue
+		}
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+			servers = append(servers, ip)
+		} else if clean := sanitizeDNSIP(ip); clean != "" {
+			servers = append(servers, clean)
+		}
+	}
+	return servers
 }
 
 // nmcliDNS reads DHCP-assigned DNS servers from NetworkManager via nmcli.
@@ -989,6 +1026,12 @@ func Teardown() {
 // runSudoersRemoval is the seam tests override.
 var runSudoersRemoval = defaultRunSudoersRemoval
 
+// tryPasswordlessSudoersRemoval removes path only if sudo allows it without a
+// password, which the drop-in's own rule does; with no drop-in it fails quietly.
+var tryPasswordlessSudoersRemoval = func(path string) bool {
+	return exec.Command("sudo", "-n", "/usr/bin/rm", "-f", path).Run() == nil
+}
+
 func defaultRunSudoersRemoval(path string) {
 	rmCmd := exec.Command("sudo", "rm", "-f", path)
 	rmCmd.Stdin = os.Stdin
@@ -1003,10 +1046,12 @@ func defaultRunSudoersRemoval(path string) {
 // EACCES there and the removal never ran. The marker is the same record
 // InstallSudoers already keeps for exactly this reason, and its absence means
 // lerd never installed a drop-in, so there is nothing to remove and no grant
-// that would make the sudo passwordless.
+// that would make the sudo passwordless. The exception is a drop-in written by
+// `lerd bootstrap --system`, which runs as root and leaves no marker; it grants
+// its own removal, so a non-interactive sudo takes it without ever prompting.
 func removeSudoersGrant() bool {
 	if _, err := os.Stat(sudoersMarkerPath()); err != nil {
-		return false
+		return tryPasswordlessSudoersRemoval(lerdSudoersPath)
 	}
 	runSudoersRemoval(lerdSudoersPath)
 	ForgetSudoersMarker()

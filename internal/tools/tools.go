@@ -1,5 +1,5 @@
 // Package tools resolves the pinned versions and download URLs of the host
-// tools lerd installs (composer, fnm, mkcert). tools.yaml is the source of
+// tools lerd installs (composer, mise, fnm, mkcert). tools.yaml is the source of
 // truth: embedded at build time as the offline fallback, and fetched from
 // GitHub before use so a bad pin can be fixed without a binary release.
 package tools
@@ -49,6 +49,11 @@ type Tool struct {
 	// Sizes is the asset's byte count per GOOS/GOARCH, so a command can say what
 	// it is about to fetch before it starts. Optional, like Digests.
 	Sizes map[string]int64 `yaml:"sizes,omitempty"`
+	// Published dates the build behind this pin, per GOOS/GOARCH like the two
+	// above. A rebuild that replaces what a version ships without changing the
+	// version itself moves this and nothing else, so it is what says an install
+	// is holding the older one. Optional, like the two above.
+	Published map[string]string `yaml:"published,omitempty"`
 }
 
 // Manifest is the parsed tools.yaml.
@@ -116,6 +121,13 @@ func (t Tool) valid() bool {
 // pins none for this platform.
 func (m *Manifest) Digest(name, goos, goarch string) string {
 	return m.Tools[name].Digests[goos+"/"+goarch]
+}
+
+// PublishedAt returns when an asset was built, empty when the manifest carries
+// no date for it. A pin whose version is unchanged still names a different
+// build when this moves.
+func (m *Manifest) PublishedAt(name, goos, goarch string) string {
+	return m.Tools[name].Published[goos+"/"+goarch]
 }
 
 // Size returns the published byte count for an asset, zero when the manifest
@@ -255,20 +267,79 @@ func fetchPublished(ctx context.Context, urls []string) (map[string]Tool, []byte
 }
 
 // Names lists the managed tools in display order.
-func Names() []string { return []string{"composer", "fnm", "mkcert"} }
+func Names() []string { return []string{"composer", "mise", "fnm", "mkcert"} }
 
 func binPath(name string) string {
-	bin := name
-	if name == "composer" {
-		bin = "composer.phar"
+	switch name {
+	case "composer":
+		return filepath.Join(config.BinDir(), "composer.phar")
+	case "mise":
+		// mise's own install location, where lerd puts it too so the user's
+		// shell runs the same mise lerd drives.
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".local", "bin", "mise")
 	}
-	return filepath.Join(config.BinDir(), bin)
+	return filepath.Join(config.BinDir(), name)
+}
+
+// stampPath is the version sidecar. mise's stays in lerd's bin dir rather than
+// beside a binary in the user's ~/.local/bin.
+func stampPath(name string) string {
+	if name == "mise" {
+		return filepath.Join(config.BinDir(), "mise.version")
+	}
+	return binPath(name) + ".version"
+}
+
+// LerdOwned reports whether lerd may replace the tool. A mise the user
+// installed sits exactly where lerd's would, so only the stamp lerd writes when
+// it installs one marks that copy as lerd's.
+func LerdOwned(name string) bool {
+	if name != "mise" {
+		return true
+	}
+	_, err := os.Stat(stampPath(name))
+	return err == nil
 }
 
 // WriteStamp records the installed version of a tool in its sidecar, so
 // status can report it without executing anything.
 func WriteStamp(name, version string) error {
-	return os.WriteFile(binPath(name)+".version", []byte(version+"\n"), 0o644)
+	path := stampPath(name)
+	// mise's stamp is not beside its binary, so its dir may not exist yet.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(version+"\n"), 0o644)
+}
+
+// WritePublished records when the build now on disk was published, and clears
+// the record when the pin carries no date. Kept beside the version stamp rather
+// than inside it, so a binary that predates the field reads as having no date
+// rather than as having an unparseable version.
+func WritePublished(name, published string) error {
+	path := binPath(name) + ".published"
+	if published == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(path, []byte(published+"\n"), 0o644)
+}
+
+// InstalledPublished reports the publish date recorded for an installed tool,
+// empty when the binary is gone or nothing was recorded.
+func InstalledPublished(name string) string {
+	path := binPath(name)
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(path + ".published")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // InstalledVersion reports the version of an installed tool: the stamp
@@ -283,14 +354,20 @@ func WriteStamp(name, version string) error {
 // unknown forever and, because the update check needs a known version, was
 // never offered an update either.
 func InstalledVersion(name string) string {
+	if !LerdOwned(name) {
+		return ""
+	}
 	path := binPath(name)
 	binInfo, err := os.Stat(path)
 	if err != nil {
 		return ""
 	}
-	if stampInfo, err := os.Stat(path + ".version"); err == nil &&
+	stamp := stampPath(name)
+	// mise updates itself in place, often right after lerd installs it, so its
+	// stamp says nothing about the binary; asking it costs one quick exec.
+	if stampInfo, err := os.Stat(stamp); err == nil && name != "mise" &&
 		!binInfo.ModTime().After(stampInfo.ModTime().Add(time.Minute)) {
-		if b, err := os.ReadFile(path + ".version"); err == nil {
+		if b, err := os.ReadFile(stamp); err == nil {
 			if v := strings.TrimSpace(string(b)); versionRe.MatchString(v) {
 				return v
 			}
@@ -346,7 +423,7 @@ func composerVersion(path string) string {
 func probeVersion(name, path string) string {
 	var arg string
 	switch name {
-	case "fnm":
+	case "fnm", "mise":
 		arg = "--version"
 	case "mkcert":
 		arg = "-version"
@@ -376,11 +453,15 @@ type ToolStatus struct {
 	UpdateAvailable bool   `json:"update_available"`
 }
 
-// StatusAll compares each installed tool with its pin.
+// StatusAll compares each installed tool with its pin. A mise lerd did not
+// install is the user's, not a managed tool, so it is left out entirely.
 func StatusAll(ctx context.Context) []ToolStatus {
 	m := Load(ctx)
 	out := make([]ToolStatus, 0, len(Names()))
 	for _, name := range Names() {
+		if !LerdOwned(name) {
+			continue
+		}
 		pin := m.Tools[name].Version
 		installed := InstalledVersion(name)
 		_, err := os.Stat(binPath(name))
@@ -416,4 +497,19 @@ func (m *Manifest) URL(name, goos, goarch string) (string, error) {
 		return "", fmt.Errorf("unresolved placeholder in %s URL %q", name, url)
 	}
 	return url, nil
+}
+
+// BuildIsStale reports whether the published build is not the one on disk: a
+// different version, or the same version rebuilt since it was fetched. A
+// rebuild that replaces what a version ships keeps the version it already had,
+// so the publish date is the only thing separating the two, and an install that
+// predates the date being published has none recorded and takes it once.
+//
+// Shared so the CLI's fetch and the dashboard's update badge cannot disagree
+// about what counts as an update.
+func BuildIsStale(pinned, installed, publishedAt, installedPublished string) bool {
+	if installed != pinned {
+		return true
+	}
+	return publishedAt != "" && publishedAt != installedPublished
 }

@@ -129,6 +129,10 @@ type Framework struct {
 	// Nginx, when set, declares extra server-block config the framework needs
 	// (Magento's /setup, /static, and /media handling). See FrameworkNginx.
 	Nginx *FrameworkNginx `yaml:"nginx,omitempty"`
+	// FrontController makes index.php the only script nginx hands to PHP: a
+	// URL naming any other .php file is rewritten onto it, for apps whose
+	// router owns those paths (GLPI 11). Plain data, so a project may set it.
+	FrontController bool `yaml:"front_controller,omitempty"`
 	// Requires names the service presets the framework cannot run without
 	// (Magento 2.4 has no MySQL catalog search engine, so it needs opensearch).
 	// Link installs and starts them; the doctor reports one that goes missing.
@@ -708,6 +712,11 @@ type FrameworkEnvConf struct {
 	// to start a container that does not exist. An unknown field is ignored
 	// instead, for the same reason AppFile above is a new field.
 	SQLite *FrameworkServiceDef `yaml:"sqlite,omitempty"`
+
+	// DefaultService names the entry in Services a project is wired to when it
+	// names no database at all, the state a fresh scaffold is in. It never
+	// overrides a detected or picked database. An older binary ignores it.
+	DefaultService string `yaml:"default_service,omitempty"`
 
 	// KeyGeneration describes how to generate an application key if missing.
 	KeyGeneration *EnvKeyGeneration `yaml:"key_generation,omitempty"`

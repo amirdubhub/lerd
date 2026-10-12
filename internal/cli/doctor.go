@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -20,6 +19,7 @@ import (
 	"github.com/geodro/lerd/internal/nativephp"
 	"github.com/geodro/lerd/internal/origin"
 	phpPkg "github.com/geodro/lerd/internal/php"
+	"github.com/geodro/lerd/internal/platform"
 	"github.com/geodro/lerd/internal/podman"
 	"github.com/geodro/lerd/internal/services"
 	lerdSystemd "github.com/geodro/lerd/internal/systemd"
@@ -135,7 +135,7 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 		}
 	}
 
-	if runtime.GOOS == "linux" {
+	if !platform.Current.UsesMachineVM {
 		if _, lookErr := exec.LookPath("crun"); lookErr != nil {
 			warn("OCI runtime", "crun not found — recommended for rootless podman (install: sudo pacman -S crun / sudo apt install crun / sudo dnf install crun)")
 			rep.fixLast(manualFix)
@@ -264,6 +264,13 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 		} else {
 			ok("rootless network (pasta)")
 		}
+	}
+
+	for _, p := range enforcedMysqldProfiles("/") {
+		fail("host AppArmor profile "+filepath.Base(p),
+			"a native MySQL/MariaDB profile also confines the server in lerd's database container, which then ignores its config, listens on the wrong socket and cannot be stopped cleanly",
+			"sudo ln -s "+p+" /etc/apparmor.d/disable/ && sudo apparmor_parser -R "+p+", then restart lerd's database service (or purge the native server if lerd's replaces it)")
+		rep.fixLast(manualFix)
 	}
 
 	quadletDir := config.QuadletDir()
@@ -622,6 +629,10 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 		}
 	}
 
+	if msg, bad := phpMountsFinding(podman.StaleQuadletMounts()); bad {
+		fail("PHP container mounts", msg, "lerd start")
+	}
+
 	if plan, planErr := cleanup.Inspect(cleanupScope(false)); planErr == nil && plan.ReclaimBytes() > 0 {
 		info("Reclaimable disk", fmt.Sprintf("at least %s (run: lerd cleanup)", humanSize(plan.ReclaimBytes())))
 		rep.fixLast(autoFix(fixCleanup, "", "reclaim disk space (lerd cleanup)"))
@@ -647,6 +658,12 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 		fail("host reachable from containers",
 			"no candidate routed back to the host (Xdebug, inter-container → host calls will time out)",
 			"check rootless podman / netavark / pasta routing; run: podman unshare --rootless-netns ip addr (expected: 169.254.1.2 on podman bridge or DNAT for it)")
+	}
+
+	if podman.RootlessNetnsLacksDefaultRoute() {
+		fail("container network route",
+			"podman's rootless network was set up before the host had a route out, so containers have no internet",
+			"lerd start (it rebuilds the network)")
 	}
 
 	if reg, regErr := config.LoadSites(); regErr == nil {
@@ -760,4 +777,14 @@ func printNativePHPFindings(versions []string, pins *tools.Manifest,
 		}
 		ok("PHP " + v)
 	}
+}
+
+// phpMountsFinding words the doctor failure for PHP quadlets that bind-mount a
+// folder that has gone: podman refuses to start such a container, so every site
+// on that version answers 502 until lerd start rewrites the quadlet.
+func phpMountsFinding(stale []string) (string, bool) {
+	if len(stale) == 0 {
+		return "", false
+	}
+	return "mounts folders that no longer exist, so PHP-FPM cannot start: " + strings.Join(stale, ", "), true
 }

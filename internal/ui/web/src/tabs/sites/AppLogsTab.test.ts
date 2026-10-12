@@ -106,6 +106,23 @@ describe('AppLogsTab', () => {
     expect(parentCalls.every((u) => !u.includes('branch='))).toBe(true);
   });
 
+  it('copies a prompt for an agent from an opened entry', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.assign(navigator, { clipboard: { writeText } });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const body = url.includes('/laravel.log')
+        ? { entries: [{ level: 'ERROR', date: '2026-10-08 12:00:01', message: 'Undefined variable $order', detail: 'trace' }] }
+        : { files: [{ name: 'laravel.log', size: 10 }] };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    render(SiteHarness, { props: { site: siteWith() } });
+
+    (await screen.findByText('Undefined variable $order')).click();
+    (await screen.findByText('Copy for agent')).click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0][0]).toContain('source "app:laravel.log", site "theregistry.test"');
+  });
+
   // The tab has no stream of its own: it used to refresh only because every
   // websocket snapshot invalidated its effect. It polls on its own now.
   describe('polling', () => {
@@ -160,6 +177,34 @@ describe('AppLogsTab', () => {
     });
   });
 
+  // A large log comes a page at a time: the newest first, older ones as the
+  // reader scrolls to the top, from where the loaded ones end.
+  it('loads the next older page when scrolled to the top', async () => {
+    const page = (n: number) => Array.from({ length: n }, (_, k) => ({ date: '2026-10-01', level: 'INFO', message: `m${k}` }));
+    globalThis.fetch = vi.fn(async (url: string) => {
+      calls.push(url);
+      const body = !url.includes('/laravel.log')
+        ? { files: [{ name: 'laravel.log', size: 10 }] }
+        : url.includes('offset=0')
+          ? { entries: page(200), more: true }
+          : { entries: page(3), more: false };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }) as unknown as typeof fetch;
+
+    const { container } = render(SiteHarness, { props: { site: siteWith() } });
+    await vi.waitFor(() => expect(calls.some((u) => u.includes('offset=0'))).toBe(true));
+    expect(screen.queryByRole('button', { name: 'All' })).toBeNull();
+
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement;
+    scroller.scrollTop = 0;
+    scroller.dispatchEvent(new Event('scroll'));
+
+    await vi.waitFor(() => expect(calls.some((u) => u.includes('offset=200'))).toBe(true));
+  });
+
   it('clears logs only after the confirmation modal is confirmed', async () => {
     const methodCalls: string[] = [];
     globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
@@ -190,7 +235,7 @@ describe('AppLogsTab', () => {
     await Promise.resolve();
 
     // Opening the modal must not delete anything on its own.
-    const btn = (await screen.findByTitle(/reclaim disk/i)) as HTMLButtonElement;
+    const btn = (await screen.findByRole('button', { name: /Clear logs ·/ })) as HTMLButtonElement;
     btn.click();
     flushSync();
     expect(methodCalls.some((c) => c.includes('/clear'))).toBe(false);
