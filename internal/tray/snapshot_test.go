@@ -5,6 +5,8 @@ package tray
 import (
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +27,74 @@ func stubAPI(t *testing.T, handlers map[string]http.HandlerFunc) {
 	prev := apiBase
 	apiBase = srv.URL
 	t.Cleanup(func() { apiBase = prev })
+	useBackend(t, &fakeBackend{})
+}
+
+// fakeBackend records the commands the tray runs and serves fixed settings.
+type fakeBackend struct {
+	settings      Settings
+	settingsReads int
+	ran           [][]string
+}
+
+func (f *fakeBackend) Settings() Settings {
+	f.settingsReads++
+	return f.settings
+}
+
+func (f *fakeBackend) Command(args ...string) *exec.Cmd {
+	f.ran = append(f.ran, args)
+	return exec.Command("lerd-test-command-that-does-not-exist")
+}
+
+func useBackend(t *testing.T, b Backend) {
+	t.Helper()
+	prev := backend
+	backend = b
+	t.Cleanup(func() { backend = prev })
+}
+
+func TestFetchSnapshot_ReadsSettingsFromTheBackend(t *testing.T) {
+	stubAPI(t, map[string]http.HandlerFunc{"/api/status": writeJSON(runningStatus)})
+	want := Settings{Autostart: true, LANExposed: true, LANServicesExposed: true, Dumps: true, Notifications: true, HighContrastIcon: true, LatestVersion: "v9.9.9"}
+	useBackend(t, &fakeBackend{settings: want})
+
+	snap := fetchSnapshot()
+
+	got := Settings{
+		Autostart: snap.AutostartEnabled, LANExposed: snap.LANExposed, LANServicesExposed: snap.LANServicesExposed,
+		Dumps: snap.DumpsEnabled, Notifications: snap.NotificationsEnabled, HighContrastIcon: snap.HighContrastIcon,
+		LatestVersion: snap.LatestVersion,
+	}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// With lerd down there is nothing to toggle, and on Windows each read is a
+// trip into the WSL distro.
+func TestFetchSnapshot_SkipsSettingsWhileLerdIsDown(t *testing.T) {
+	stubAPI(t, nil)
+	apiBase = "http://127.0.0.1:1"
+	fb := &fakeBackend{}
+	useBackend(t, fb)
+
+	fetchSnapshot()
+
+	if fb.settingsReads != 0 {
+		t.Errorf("settings read %d times while the API was unreachable", fb.settingsReads)
+	}
+}
+
+func TestLerdCmd_RunsThroughTheBackend(t *testing.T) {
+	fb := &fakeBackend{}
+	useBackend(t, fb)
+
+	lerdCmd("service", "start", "mysql")
+
+	if len(fb.ran) != 1 || strings.Join(fb.ran[0], " ") != "service start mysql" {
+		t.Errorf("ran %q", fb.ran)
+	}
 }
 
 // isolateState points every lerd directory at a throwaway one. fetchSnapshot

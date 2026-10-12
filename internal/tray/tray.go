@@ -11,16 +11,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
-	"syscall"
 	"time"
 
-	"github.com/geodro/lerd/internal/config"
-	lerdSystemd "github.com/geodro/lerd/internal/systemd"
-	lerdUpdate "github.com/geodro/lerd/internal/update"
-	"github.com/geodro/lerd/internal/version"
 	"github.com/getlantern/systray"
 )
+
+// backend reads lerd's settings and runs its commands; Run uses this machine,
+// RunResident is handed the WSL distro by the Windows agent.
+var backend = defaultBackend()
+
+// resident marks a tray owned by a process that outlives lerd: Quit stops lerd
+// but keeps the tray, and the tray cannot be turned off from its own menu.
+var resident bool
 
 // apiBase is the loopback URL used for polling the lerd HTTP API. It
 // deliberately stays on 127.0.0.1 because the tray should work even
@@ -111,10 +115,10 @@ var (
 	lerdBinFallbackWarn sync.Once
 )
 
-// lerdCmd is a thin wrapper around exec.Command that uses the resolved
-// `lerd` binary path so handlers work under launchd's empty PATH.
+// lerdCmd builds a lerd command through the backend: the resolved `lerd`
+// binary here, so handlers work under launchd's empty PATH, or lerd.exe on Windows.
 func lerdCmd(args ...string) *exec.Cmd {
-	return exec.Command(lerdBin(), args...)
+	return backend.Command(args...)
 }
 
 // Run starts the system tray applet.
@@ -123,6 +127,9 @@ func lerdCmd(args ...string) *exec.Cmd {
 // restored. When launched by launchd, XPC_SERVICE_NAME is set and we run
 // foreground directly — launchd owns the process lifecycle.
 func Run(mono bool) error {
+	if backend == nil {
+		return fmt.Errorf("the tray runs from lerd.exe --agent on Windows")
+	}
 	if os.Getenv(daemonEnv) == "" && os.Getenv("XPC_SERVICE_NAME") == "" {
 		return detach(mono)
 	}
@@ -133,6 +140,20 @@ func Run(mono bool) error {
 	systray.Run(func() { onReady(mono) }, nil)
 	return nil
 }
+
+// RunResident runs the colour tray in the foreground of a process that outlives
+// lerd, the Windows agent of a WSL install, until Quit is called. It must run
+// on the main goroutine.
+func RunResident(b Backend) {
+	backend, resident = b, true
+	if !acquireLock() {
+		return
+	}
+	systray.Run(func() { onReady(false) }, nil)
+}
+
+// Quit removes the tray icon and makes RunResident return.
+func Quit() { systray.Quit() }
 
 // lockFile holds the instance lock for the life of the process. It has to be
 // package-level: an unreferenced *os.File is closed by its GC finalizer, which
@@ -153,7 +174,7 @@ func acquireLock() bool {
 		// Can't create the lock file — allow startup rather than blocking.
 		return true
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := tryLock(f); err != nil {
 		f.Close()
 		return false
 	}
@@ -189,7 +210,7 @@ func detach(mono bool) error {
 	cmd.Stdin = null
 	cmd.Stdout = null
 	cmd.Stderr = null
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	setDetachAttrs(cmd)
 	return cmd.Start()
 }
 
@@ -245,12 +266,14 @@ func onReady(mono bool) {
 	go handleLANServices(menu.mLANServices, refresh)
 	go handleDumps(menu.mDumps, refresh)
 	go handleNotifications(menu.mNotifications, refresh)
-	go handleTrayOff(menu.mTrayOff)
+	if menu.mTrayOff != nil {
+		go handleTrayOff(menu.mTrayOff)
+	}
 	if menu.mIconStyle != nil {
 		go handleIconStyle(menu.mIconStyle, refresh)
 	}
 	go handleUpdate(menu.mUpdate)
-	go handleQuit(menu.mQuit, cancel)
+	go handleQuit(menu.mQuit, cancel, refresh)
 }
 
 func runPoller(ctx context.Context, updateCh chan<- *Snapshot) {
@@ -322,18 +345,14 @@ func fetchSnapshot() *Snapshot {
 		return snap
 	}
 
-	snap.AutostartEnabled = lerdSystemd.IsAutostartEnabled()
-
-	// LAN, debug bridge, and notifications all read straight from config —
-	// the tray cares about persisted intent and avoids a new API surface
-	// for each toggle.
-	if cfg, err := config.LoadGlobal(); err == nil && cfg != nil {
-		snap.LANExposed = cfg.LAN.Exposed
-		snap.LANServicesExposed = cfg.LAN.ServicesExposed
-		snap.DumpsEnabled = cfg.IsDumpsEnabled()
-		snap.NotificationsEnabled = cfg.IsNotificationsEnabled()
-		snap.HighContrastIcon = cfg.IsHighContrastTrayIcon()
-	}
+	s := backend.Settings()
+	snap.AutostartEnabled = s.Autostart
+	snap.LANExposed = s.LANExposed
+	snap.LANServicesExposed = s.LANServicesExposed
+	snap.DumpsEnabled = s.Dumps
+	snap.NotificationsEnabled = s.Notifications
+	snap.HighContrastIcon = s.HighContrastIcon
+	snap.LatestVersion = s.LatestVersion
 
 	// /api/services — real services only. The per-site worker units mixed into
 	// the same payload are counted rather than discarded; the API lists them
@@ -368,11 +387,6 @@ func fetchSnapshot() *Snapshot {
 			}
 		}
 		r.Body.Close()
-	}
-
-	// Update check (uses shared disk cache — fast, no extra network call when cache is fresh)
-	if info, _ := lerdUpdate.CachedUpdateCheck(version.Version); info != nil {
-		snap.LatestVersion = info.LatestVersion
 	}
 
 	return snap
@@ -499,27 +513,22 @@ func handleToggle(item *systray.MenuItem, refresh func()) {
 	}
 }
 
+// Toggle handlers read the current state through the backend at click time
+// rather than from the snapshot, so a click is robust to a stale copy.
 func handleAutostart(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
 		arg := "enable"
-		if lerdSystemd.IsAutostartEnabled() {
+		if backend.Settings().Autostart {
 			arg = "disable"
 		}
 		runAndRefresh(lerdCmd("autostart", arg), refresh)
 	}
 }
 
-// handleLAN toggles `lerd lan expose` / `lerd lan unexpose` on click. We
-// read the current state from config rather than relying on the snapshot
-// so the click is robust to a stale in-memory copy.
 func handleLAN(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
-		exposed := false
-		if cfg, err := config.LoadGlobal(); err == nil && cfg != nil {
-			exposed = cfg.LAN.Exposed
-		}
 		arg := "expose"
-		if exposed {
+		if backend.Settings().LANExposed {
 			arg = "unexpose"
 		}
 		runAndRefresh(lerdCmd("lan", arg), refresh)
@@ -528,31 +537,19 @@ func handleLAN(item *systray.MenuItem, refresh func()) {
 
 func handleLANServices(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
-		enabled := false
-		if cfg, err := config.LoadGlobal(); err == nil && cfg != nil {
-			enabled = cfg.LAN.ServicesExposed
-		}
-		runAndRefresh(lerdCmd("lan", "services", offOn(enabled)), refresh)
+		runAndRefresh(lerdCmd("lan", "services", offOn(backend.Settings().LANServicesExposed)), refresh)
 	}
 }
 
 func handleDumps(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
-		enabled := false
-		if cfg, err := config.LoadGlobal(); err == nil && cfg != nil {
-			enabled = cfg.IsDumpsEnabled()
-		}
-		runAndRefresh(lerdCmd("dump", offOn(enabled)), refresh)
+		runAndRefresh(lerdCmd("dump", offOn(backend.Settings().Dumps)), refresh)
 	}
 }
 
 func handleNotifications(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
-		enabled := true
-		if cfg, err := config.LoadGlobal(); err == nil && cfg != nil {
-			enabled = cfg.IsNotificationsEnabled()
-		}
-		runAndRefresh(lerdCmd("notify", offOn(enabled)), refresh)
+		runAndRefresh(lerdCmd("notify", offOn(backend.Settings().Notifications)), refresh)
 	}
 }
 
@@ -566,12 +563,8 @@ func handleTrayOff(item *systray.MenuItem) {
 
 func handleIconStyle(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
-		highContrast := false
-		if cfg, err := config.LoadGlobal(); err == nil && cfg != nil {
-			highContrast = cfg.IsHighContrastTrayIcon()
-		}
 		style := "high-contrast"
-		if highContrast {
+		if backend.Settings().HighContrastIcon {
 			style = "default"
 		}
 		runAndRefresh(lerdCmd("tray", "icon", style), refresh)
@@ -597,9 +590,8 @@ func offOn(currentlyEnabled bool) string {
 
 func handleUpdate(item *systray.MenuItem) {
 	for range item.ClickedCh {
-		info, _ := lerdUpdate.CachedUpdateCheck(version.Version)
-		if info != nil {
-			openUpdateTerminal(lerdUpdate.StripV(info.LatestVersion))
+		if latest := backend.Settings().LatestVersion; latest != "" {
+			openUpdateTerminal(strings.TrimPrefix(latest, "v"))
 		} else {
 			item.SetTitle("✔ Up to date")
 			go func() {
@@ -610,32 +602,17 @@ func handleUpdate(item *systray.MenuItem) {
 	}
 }
 
-func openUpdateTerminal(latestVer string) {
-	script := fmt.Sprintf(
-		`echo "Lerd update available: v%s"; `+
-			`read -rp "Update now? [y/N] " ans; `+
-			`[[ "$ans" =~ ^[Yy]$ ]] && lerd update; `+
-			`echo; read -rp "Press Enter to close..."`,
-		latestVer,
-	)
-	terminals := [][]string{
-		{"konsole", "-e", "bash", "-c", script},
-		{"ptyxis", "--", "bash", "-c", script},
-		{"gnome-terminal", "--", "bash", "-c", script},
-		{"xfce4-terminal", "-e", "bash -c '" + script + "'"},
-		{"xterm", "-e", "bash", "-c", script},
-	}
-	for _, t := range terminals {
-		if _, err := exec.LookPath(t[0]); err == nil {
-			_ = exec.Command(t[0], t[1:]...).Start()
-			return
+// handleQuit stops lerd. A resident tray stays to start it again; anywhere
+// else the tray goes with it.
+func handleQuit(item *systray.MenuItem, cancel context.CancelFunc, refresh func()) {
+	for range item.ClickedCh {
+		if resident {
+			runAndRefresh(lerdCmd("quit"), refresh)
+			continue
 		}
+		cancel()
+		_ = lerdCmd("quit").Run()
+		systray.Quit()
+		return
 	}
-}
-
-func handleQuit(item *systray.MenuItem, cancel context.CancelFunc) {
-	<-item.ClickedCh
-	cancel()
-	_ = lerdCmd("quit").Run()
-	systray.Quit()
 }

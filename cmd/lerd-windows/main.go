@@ -63,8 +63,19 @@ func main() {
 		f, err := os.OpenFile(filepath.Join(dir, "lerd-agent.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err == nil {
 			log.SetOutput(f)
+			// The headless console drops stderr; the tray library and a panic write there.
+			redirectStderr(f)
 		}
-		log.Fatal(agent(cfg, filepath.Join(dir, winshim.ConfigName)))
+		go func() {
+			if err := agent(cfg, filepath.Join(dir, winshim.ConfigName)); err != nil {
+				log.Print(err)
+			}
+			quitTray()
+		}()
+		log.Print("tray starting")
+		runTray(cfg)
+		log.Print("tray stopped")
+		return
 	}
 	os.Exit(runInDistro(winshim.WSLArgs(cfg, cwd, os.Args[1:])))
 }
@@ -83,9 +94,11 @@ func runInDistro(wslArgs []string) int {
 	return 0
 }
 
-// agent keeps running until its config file is removed or rewritten, which is
-// how uninstall and a rerun of wsl:setup stop it: the installer may have
-// started it elevated, and an unelevated lerd is not allowed to kill that.
+// agent boots the distro and answers DNS for the site TLD while the tray runs
+// on the main goroutine. It returns once its config file is removed or
+// rewritten, which is how uninstall and a rerun of wsl:setup stop it: the
+// installer may have started it elevated, and an unelevated lerd is not
+// allowed to kill that.
 func agent(cfg winshim.Config, confPath string) error {
 	started, err := os.Stat(confPath)
 	if err != nil {
@@ -98,7 +111,24 @@ func agent(cfg winshim.Config, confPath string) error {
 			log.Printf("booting %s: %v: %s", cfg.Distro, err, out)
 		}
 	}
-	boot()
+	go boot()
+	go func() {
+		if err := serveDNS(cfg, boot); err != nil {
+			log.Print(err)
+		}
+	}()
+	for {
+		time.Sleep(2 * time.Second)
+		if now, err := os.Stat(confPath); err != nil || !now.ModTime().Equal(started.ModTime()) {
+			log.Print("config removed or rewritten, stopping")
+			return nil
+		}
+	}
+}
+
+// serveDNS answers *.<tld> on 127.0.0.1:53, where the NRPT rule sends it, and
+// boots the distro again when a site is looked up while lerd is down.
+func serveDNS(cfg winshim.Config, boot func()) error {
 	waker := &winshim.Waker{
 		Alive: func() bool {
 			c, err := net.DialTimeout("tcp", "127.0.0.1:7073", 500*time.Millisecond)
@@ -125,15 +155,7 @@ func agent(cfg winshim.Config, confPath string) error {
 	log.Printf("answering *.%s on 127.0.0.1:53", cfg.TLD)
 	buf := make([]byte, 1500)
 	for {
-		if now, err := os.Stat(confPath); err != nil || !now.ModTime().Equal(started.ModTime()) {
-			log.Print("config removed or rewritten, stopping")
-			return nil
-		}
-		pc.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck
 		n, addr, err := pc.ReadFrom(buf)
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			continue
-		}
 		if err != nil {
 			return err
 		}

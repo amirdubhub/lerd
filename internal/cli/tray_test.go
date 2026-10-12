@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/geodro/lerd/internal/config"
+	"github.com/geodro/lerd/internal/tray"
 )
 
 // The applet has to die without taking `lerd tray off` (or the shell that ran
@@ -82,8 +83,27 @@ func TestRunTrayIconSet_DefaultRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTrayStateCmd_PrintsTheSettingsAsJSON(t *testing.T) {
+	withTempXDG(t)
+	_ = runTrayIconSet(true)
+
+	var out strings.Builder
+	cmd := newTrayStateCmd()
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := tray.ParseSettings([]byte(out.String()))
+	if err != nil {
+		t.Fatalf("output is not the tray settings: %v\n%s", err, out.String())
+	}
+	if !s.HighContrastIcon || !s.Notifications {
+		t.Errorf("settings do not match the config: %+v", s)
+	}
+}
+
 func TestNewTrayCmd_HasSubcommands(t *testing.T) {
-	want := map[string]bool{"icon": false, "on": false, "off": false}
+	want := map[string]bool{"icon": false, "on": false, "off": false, "state": false}
 	for _, c := range NewTrayCmd().Commands() {
 		if _, ok := want[c.Name()]; ok {
 			want[c.Name()] = true

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/geodro/lerd/internal/config"
@@ -24,8 +25,22 @@ func NewTrayCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&mono, "mono", false, "Use a monochrome template icon (OS recolors it); default is the colour icon that flips white/red with lerd state")
-	cmd.AddCommand(newTrayIconCmd(), newTrayOnCmd(), newTrayOffCmd())
+	cmd.AddCommand(newTrayIconCmd(), newTrayOnCmd(), newTrayOffCmd(), newTrayStateCmd())
 	return cmd
+}
+
+// newTrayStateCmd prints the settings the tray menu shows, as JSON, for the
+// Windows tray of a WSL install, which cannot read lerd's config itself.
+func newTrayStateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "state",
+		Short:  "Print the tray menu's settings as JSON",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(tray.LocalSettings())
+		},
+	}
 }
 
 // newTrayOnCmd puts the tray back, for the desktop where it was turned off.
