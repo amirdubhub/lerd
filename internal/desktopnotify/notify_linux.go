@@ -249,7 +249,7 @@ func AppInstalled() bool {
 // would block `lerd dashboard` and freeze the tray's Dashboard item behind it.
 func OpenApp(route string) error {
 	if wsl.IsWSL() {
-		return wsl.OpenCommand(appSchemeURL(route)).Start()
+		return wsl.Open(appSchemeURL(route))
 	}
 	return exec.Command("xdg-open", appSchemeURL(route)).Start()
 }

@@ -2,6 +2,7 @@ package wsl
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +14,32 @@ func stubWindowsPath(t *testing.T, fn func(string) (string, error)) {
 	orig := windowsPathFn
 	windowsPathFn = fn
 	t.Cleanup(func() { windowsPathFn = orig })
+}
+
+func stubOpenCommand(t *testing.T, script string) {
+	t.Helper()
+	orig := openCommandFn
+	openCommandFn = func(string) *exec.Cmd { return exec.Command("sh", "-c", script) }
+	t.Cleanup(func() { openCommandFn = orig })
+}
+
+func TestOpen_waitsForTheOpenerToHandOff(t *testing.T) {
+	done := filepath.Join(t.TempDir(), "handed-off")
+	stubOpenCommand(t, "sleep 0.2; touch "+done)
+
+	if err := Open("http://lerd.localhost"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(done); err != nil {
+		t.Error("Open returned before the opener finished")
+	}
+}
+
+func TestOpen_ignoresExplorersExitStatus(t *testing.T) {
+	stubOpenCommand(t, "exit 1")
+	if err := Open("http://lerd.localhost"); err != nil {
+		t.Errorf("explorer.exe exits 1 on success, got %v", err)
+	}
 }
 
 func stubWindowsPATH(t *testing.T, dirs []string) {

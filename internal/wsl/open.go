@@ -2,6 +2,7 @@ package wsl
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,20 @@ func openTarget(target string) string {
 // opened the target, so callers Start it and ignore the exit status.
 func OpenCommand(target string) *exec.Cmd {
 	return exec.Command(windowsFile(`C:\Windows\explorer.exe`, "explorer.exe"), openTarget(target))
+}
+
+var openCommandFn = OpenCommand
+
+// Open hands target to Windows and waits for explorer.exe, which exits once it
+// has passed the target on. A short-lived lerd command must not exit first:
+// WSL kills what a console-less session started, the tray's clicks included.
+func Open(target string) error {
+	err := openCommandFn(target).Run()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return nil // explorer.exe exits 1 even when it opened the target
+	}
+	return err
 }
 
 // parseWindowsPATH splits the output of `echo %PATH%` into its directories.
