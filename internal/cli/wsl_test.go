@@ -46,10 +46,13 @@ func TestMkcertRootCAPEM_NoCAYet(t *testing.T) {
 	}
 }
 
-func TestEncodePowerShell_UTF16LEBase64(t *testing.T) {
-	// powershell -EncodedCommand takes base64 of UTF-16LE; "ab" is 61 00 62 00.
-	if got := encodePowerShell("ab"); got != "YQBiAA==" {
-		t.Errorf("got %q, want YQBiAA==", got)
+func TestRemoveWindowsSideScript_DropsToastAppID(t *testing.T) {
+	got := removeWindowsSideScript(`C:\Users\me\AppData\Local\lerd\bin`)
+	if !strings.Contains(got, `Remove-Item -Path 'HKCU:\Software\Classes\AppUserModelId\sh.lerd.Lerd' -Recurse`) {
+		t.Errorf("uninstall must drop the toast app id:\n%s", got)
+	}
+	if !strings.Contains(got, `$d = 'C:\Users\me\AppData\Local\lerd\bin'`) {
+		t.Errorf("uninstall must still drop the bin dir from PATH:\n%s", got)
 	}
 }
 

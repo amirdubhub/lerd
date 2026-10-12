@@ -9,7 +9,7 @@ The first time you open the dashboard a small banner offers to enable browser no
 Notifications have a single delivery **sink**, chosen per install and mutually exclusive so you never get the same alert twice:
 
 - **Browser**: the WebSocket fan-out to open dashboards plus Web Push to subscribed browsers (the paths described under [How it works](#how-it-works)). Needs a browser permission grant, works cross-machine over the LAN, and delivers to a closed PWA.
-- **Native desktop**: the `lerd-ui` daemon posts straight to the desktop notification service (`org.freedesktop.Notifications` over the session bus, using the DBus library lerd already ships). No browser, no permission prompt, and notifications appear even with nothing open. Web Push is suppressed in this mode, and so is the popup an open dashboard would otherwise raise itself, so the daemon's is the only copy and clicking it opens the desktop app. Linux only for now; macOS follows later.
+- **Native desktop**: the `lerd-ui` daemon posts straight to the desktop notification service (`org.freedesktop.Notifications` over the session bus, using the DBus library lerd already ships). No browser, no permission prompt, and notifications appear even with nothing open. Web Push is suppressed in this mode, and so is the popup an open dashboard would otherwise raise itself, so the daemon's is the only copy and clicking it opens the desktop app. Inside [WSL2](../getting-started/wsl2.md#8-notifications) the daemon raises Windows toasts instead. Linux and WSL2 only for now; macOS follows later.
 
 Switch under **System → Notifications** with the *Delivery* control, or from the CLI:
 
@@ -19,7 +19,7 @@ lerd notify target browser    # WebSocket + Web Push
 lerd notify status            # shows the current sink
 ```
 
-On a fresh Linux install the installer asks whether you want the [Lerd desktop app](#the-desktop-app) (which selects the native sink) or the browser, and remembers the answer. An unset target resolves to **browser**, so every upgrade, every non-interactive install, and every non-Linux install stays on the browser sink unchanged. The switcher and the native sink are offered only when a notification daemon is present (GNOME, KDE, Hyprland/mako, XFCE, dunst, …); on macOS or a host without one, only browser delivery is shown.
+On a fresh Linux install the installer asks whether you want the [Lerd desktop app](#the-desktop-app) (which selects the native sink) or the browser, and remembers the answer. An unset target resolves to **browser**, so every upgrade, every non-interactive install, and every non-Linux install stays on the browser sink unchanged. The switcher and the native sink are offered only when a notification daemon is present (GNOME, KDE, Hyprland/mako, XFCE, dunst, …) or lerd runs inside WSL2; on macOS or a host without one, only browser delivery is shown.
 
 ## The desktop app
 

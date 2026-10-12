@@ -193,6 +193,10 @@ Double-click `lerd-rootCA.crt`, pick **Place all certificates in the following s
 
 `lerd-tray` needs a graphical tray host implementing the `StatusNotifierItem` or `AppIndicator` protocol, and WSL2 does not provide one, so lerd disables it inside WSL. The Lerd desktop app puts the tray on the Windows side instead. Without it, the CLI and the dashboard at `http://lerd.localhost` (or `http://127.0.0.1:7073` directly) cover everything.
 
+## 8. Notifications
+
+With the native sink (`lerd notify target native`), `lerd-ui` raises Windows toasts through PowerShell, titled **Lerd** with its logo, and nothing has to be open for them to appear. Clicking one opens the Lerd desktop app at the right view when it is installed, and the dashboard in your default Windows browser otherwise. Banners, sound and Do Not Disturb are set per app under **Settings → System → Notifications → Lerd**. `lerd uninstall` removes the app entry Windows keeps for them.
+
 ## Verifying the install
 
 Before running `lerd link` on your first project, sanity check that all the pieces are in place:

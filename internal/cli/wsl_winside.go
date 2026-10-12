@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -11,11 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf16"
 
 	"github.com/geodro/lerd/internal/config"
+	"github.com/geodro/lerd/internal/desktopnotify"
 	"github.com/geodro/lerd/internal/dns"
 	"github.com/geodro/lerd/internal/winshim"
+	"github.com/geodro/lerd/internal/wsl"
 )
 
 // windowsSideTLD is the TLD lerd.exe's agent answers for, empty when lerd does
@@ -238,18 +238,7 @@ Clear-DnsClientCache`, tld)
 // elevated wraps script so it runs in an admin PowerShell behind a UAC prompt,
 // waiting for it to finish.
 func elevated(script string) string {
-	return fmt.Sprintf(`Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-EncodedCommand','%s'`, encodePowerShell(script))
-}
-
-// encodePowerShell renders script for -EncodedCommand (base64 of UTF-16LE),
-// which carries it through WSL interop and Windows argument parsing untouched.
-func encodePowerShell(script string) string {
-	u := utf16.Encode([]rune(script))
-	b := make([]byte, 2*len(u))
-	for i, r := range u {
-		b[2*i], b[2*i+1] = byte(r), byte(r>>8)
-	}
-	return base64.StdEncoding.EncodeToString(b)
+	return fmt.Sprintf(`Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-EncodedCommand','%s'`, wsl.EncodePowerShell(script))
 }
 
 // powershell runs script and returns its stdout alone: PowerShell reports
@@ -258,7 +247,7 @@ func encodePowerShell(script string) string {
 func powershell(script string) (string, error) {
 	var stderr bytes.Buffer
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand",
-		encodePowerShell("$ProgressPreference = 'SilentlyContinue'\n"+script))
+		wsl.EncodePowerShell("$ProgressPreference = 'SilentlyContinue'\n"+script))
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -397,7 +386,8 @@ func removeWindowsSide() error {
 
 func removeWindowsSideScript(winBin string) string {
 	return fmt.Sprintf(`Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'lerd' -ErrorAction SilentlyContinue
+Remove-Item -Path 'HKCU:\Software\Classes\AppUserModelId\%s' -Recurse -ErrorAction SilentlyContinue
 $d = '%s'
 $p = [Environment]::GetEnvironmentVariable('Path', 'User')
-[Environment]::SetEnvironmentVariable('Path', (($p -split ';') | Where-Object { $_ -and $_ -ne $d }) -join ';', 'User')`, winBin)
+[Environment]::SetEnvironmentVariable('Path', (($p -split ';') | Where-Object { $_ -and $_ -ne $d }) -join ';', 'User')`, desktopnotify.ToastAppID, winBin)
 }

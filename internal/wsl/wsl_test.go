@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+func TestEncodePowerShell_UTF16LEBase64(t *testing.T) {
+	// powershell -EncodedCommand takes base64 of UTF-16LE; "aé" is 61 00 e9 00.
+	if got := EncodePowerShell("aé"); got != "YQDpAA==" {
+		t.Errorf("got %q, want YQDpAA==", got)
+	}
+}
+
 func TestIsWSL_EnvSignal(t *testing.T) {
 	t.Setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
 	if !IsWSL() {

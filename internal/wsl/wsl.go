@@ -5,10 +5,13 @@
 package wsl
 
 import (
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
+	"unicode/utf16"
 )
 
 // IsWSL reports whether we're running inside a WSL2 distro. WSL sets
@@ -151,6 +154,30 @@ func ResolvedUpstreamDropin(nameservers []string) string {
 func WindowsTool(name string) string {
 	return windowsFile(`C:\Windows\System32\`+name, name)
 }
+
+// EncodePowerShell renders script for -EncodedCommand (base64 of UTF-16LE),
+// which carries it through WSL interop and Windows argument parsing untouched.
+func EncodePowerShell(script string) string {
+	u := utf16.Encode([]rune(script))
+	b := make([]byte, 2*len(u))
+	for i, r := range u {
+		b[2*i], b[2*i+1] = byte(r), byte(r>>8)
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// PowerShell is the path of Windows PowerShell, or "" outside WSL or when its
+// file is not there. Resolved once: notifications ask on every delivery.
+var PowerShell = sync.OnceValue(func() string {
+	if !IsWSL() {
+		return ""
+	}
+	p := windowsFile(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, "powershell.exe")
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
+})
 
 // windowsFile resolves name on PATH, else the Windows file winPath through
 // wslpath, falling back to the bare name.
