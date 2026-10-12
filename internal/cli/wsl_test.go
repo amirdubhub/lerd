@@ -122,3 +122,66 @@ func TestTrayUnitOff(t *testing.T) {
 		}
 	}
 }
+
+// Only the shell scripts lerd writes become .cmd files on Windows; the
+// binaries and version stamps beside them in the bin dir do not.
+func TestWindowsShimNames(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"php":                   "#!/bin/sh\nexec lerd php \"$@\"\n",
+		"composer":              "#!/bin/sh\nexec lerd composer \"$@\"\n",
+		"mkcert":                "\x7fELF binary",
+		"composer.phar":         "<?php",
+		"composer.phar.version": "2.8",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := windowsShimNames(dir)
+	if strings.Join(got, ",") != "composer,php" {
+		t.Errorf("windowsShimNames = %q, want [composer php]", got)
+	}
+}
+
+// php.exe and its siblings are lerd.exe under another name: a .cmd would lose
+// the current folder, since cmd.exe refuses a UNC one like \\wsl.localhost.
+func TestWriteShimExes(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("lerd.exe", "LERD")
+	write("node.exe", "stale")
+	write("php.cmd", "stale")
+	write("lerd-wsl.conf", "distro=U")
+	if err := writeShimExes(dir, []string{"php", "composer"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"php.exe", "composer.exe", "lerd.exe"} {
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(b) != "LERD" {
+			t.Errorf("%s = %q, %v; want lerd.exe's content", name, b, err)
+		}
+	}
+	for _, name := range []string{"node.exe", "php.cmd"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("%s left behind", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "lerd-wsl.conf")); err != nil {
+		t.Error("the config must survive")
+	}
+}
+
+func TestMountRoot(t *testing.T) {
+	for in, want := range map[string]string{"/mnt/c/": "/mnt", "/mnt/c": "/mnt", "/c/": "/", "": ""} {
+		if got := mountRoot(in); got != want {
+			t.Errorf("mountRoot(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

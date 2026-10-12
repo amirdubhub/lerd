@@ -9,7 +9,7 @@ import (
 )
 
 func TestConfig_RoundTrip(t *testing.T) {
-	in := Config{Distro: "Ubuntu-24.04", Lerd: "/home/george/.local/bin/lerd", TLD: "test"}
+	in := Config{Distro: "Ubuntu-24.04", Lerd: "/home/george/.local/bin/lerd", TLD: "test", Shims: "/home/george/.local/share/lerd/bin", Mount: "/mnt"}
 	got, err := ParseConfig(in.String())
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +56,48 @@ func TestWSLArgs(t *testing.T) {
 	got = WSLArgs(cfg, `C:\Users\george`, nil)
 	if got[3] != `C:\Users\george` {
 		t.Errorf("drive path rewritten: %q", got)
+	}
+}
+
+// IDEs hand the shim the file they act on as a Windows path, which means nothing
+// inside the distro; a bare word or a namespace with backslashes is left alone.
+func TestArgToLinux(t *testing.T) {
+	cfg := Config{Distro: "Ubuntu-24.04", Mount: "/mnt"}
+	for in, want := range map[string]string{
+		`C:\Users\me\app\artisan`:                        "/mnt/c/Users/me/app/artisan",
+		`D:/work/x.php`:                                  "/mnt/d/work/x.php",
+		`\\wsl.localhost\Ubuntu-24.04\home\me\app\a.php`: "/home/me/app/a.php",
+		`\\wsl$\Ubuntu-24.04\home\me`:                    "/home/me",
+		`--configuration=C:\app\phpunit.xml`:             "--configuration=/mnt/c/app/phpunit.xml",
+		`--filter=App\\Tests\\FooTest`:                   `--filter=App\\Tests\\FooTest`,
+		`App\Models\User`:                                `App\Models\User`,
+		`-v`:                                             `-v`,
+		`C:`:                                             `C:`,
+		`\\wsl.localhost\Debian\home`:                    `\\wsl.localhost\Debian\home`,
+	} {
+		if got := ArgToLinux(cfg, in); got != want {
+			t.Errorf("ArgToLinux(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestShimArgs(t *testing.T) {
+	cfg := Config{Distro: "Ubuntu-24.04", Lerd: "/home/me/.local/bin/lerd", Shims: "/home/me/.local/share/lerd/bin", Mount: "/mnt"}
+	got, err := ShimArgs(cfg, `C:\app`, "composer", []string{"install", `C:\app\composer.json`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"-d", "Ubuntu-24.04", "--cd", `C:\app`, "--exec", "/home/me/.local/share/lerd/bin/composer", "install", "/mnt/c/app/composer.json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	for _, bad := range []string{"../lerd", "a/b", "", "php;rm"} {
+		if _, err := ShimArgs(cfg, `C:\app`, bad, nil); err == nil {
+			t.Errorf("ShimArgs accepted shim name %q", bad)
+		}
+	}
+	if _, err := ShimArgs(Config{Distro: "U", Lerd: "/l"}, `C:\app`, "php", nil); err == nil {
+		t.Error("ShimArgs without a shims dir must fail and ask for wsl:setup")
 	}
 }
 
@@ -133,4 +175,19 @@ func mustAnswer(t *testing.T, q []byte, tld string) []byte {
 		t.Fatal(err)
 	}
 	return resp
+}
+
+func TestShimFromExe(t *testing.T) {
+	for in, want := range map[string]string{
+		`C:\x\lerd.exe`:       "",
+		`C:\x\LERD.EXE`:       "",
+		`C:\x\lerd-setup.exe`: "",
+		`C:\x\php.exe`:        "php",
+		`C:\x\composer.exe`:   "composer",
+		`C:\x\redis-cli.exe`:  "redis-cli",
+	} {
+		if got := ShimFromExe(in); got != want {
+			t.Errorf("ShimFromExe(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

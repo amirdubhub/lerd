@@ -29,7 +29,8 @@ Every step checks before it acts, so running it again after a failure picks up w
 
 `lerd wsl:setup`, which the installer runs for you, puts these in place:
 
-- **`lerd` in any Windows terminal.** `lerd.exe` in `%LOCALAPPDATA%\lerd\bin`, on your PATH, runs lerd inside the distro from the folder you are in, including a project opened through `\\wsl.localhost\...`.
+- **`lerd` in any Windows terminal.** `lerd.exe` in `%LOCALAPPDATA%\lerd\bin`, on your PATH, runs lerd inside the distro from the folder you are in, including a project opened through `\\wsl.localhost\...`. Windows paths in its arguments, such as `C:\work\app` or `--configuration=\\wsl.localhost\Ubuntu\home\you\app\phpunit.xml`, are translated to the paths the distro sees.
+- **`php`, `composer`, `node` and lerd's other shims.** `php.exe`, `composer.exe` and so on sit beside `lerd.exe` and run the same shim as inside the distro, so a Windows IDE can point its PHP interpreter, Composer or Node at them. They are rewritten on each `lerd wsl:setup`, so run it again after enabling a new shim.
 - **lerd at login.** A background agent starts with Windows and boots the distro, so sites and the dashboard are up without a WSL window open. WSL's idle timeout is switched off in `%USERPROFILE%\.wslconfig`, which otherwise stops the distro, and every container with it, seconds after the last terminal closes.
 - **`.test` in Windows browsers, wildcards included.** The agent answers DNS for your site TLD on `127.0.0.1`, and a Windows DNS rule (NRPT) sends the TLD there. It is the one step that needs administrator rights. Answering DNS rather than writing hosts file lines is what keeps `*.branch.site.test` worktree domains working.
 - **HTTPS trusted by Windows browsers.** lerd's local CA is imported into your Windows user's trust store.

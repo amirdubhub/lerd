@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -55,8 +56,12 @@ func installWindowsSide(w io.Writer) error {
 		return err
 	}
 	tld := windowsSideTLD()
-	cfg := winshim.Config{Distro: distro, Lerd: self, TLD: tld}
+	drive, _ := exec.Command("wslpath", "-u", `C:\`).Output()
+	cfg := winshim.Config{Distro: distro, Lerd: self, TLD: tld, Shims: config.BinDir(), Mount: mountRoot(strings.TrimSpace(string(drive)))}
 	if err := os.WriteFile(filepath.Join(dir, winshim.ConfigName), []byte(cfg.String()), 0o644); err != nil {
+		return err
+	}
+	if err := writeShimExes(dir, windowsShimNames(config.BinDir())); err != nil {
 		return err
 	}
 	winDir, err := windowsPath(dir)
@@ -277,6 +282,73 @@ func windowsEnvPath(name string) (string, error) {
 		return "", fmt.Errorf("wslpath: %w", err)
 	}
 	return strings.TrimSpace(string(p)), nil
+}
+
+// windowsShimNames lists the shims in dir that get a .exe twin on Windows: the
+// shell scripts lerd writes, not the binaries and version stamps beside them.
+func windowsShimNames(dir string) []string {
+	entries, _ := os.ReadDir(dir)
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || strings.Contains(e.Name(), ".") {
+			continue
+		}
+		f, err := os.Open(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		head := make([]byte, 2)
+		n, _ := f.Read(head)
+		f.Close()
+		if string(head[:n]) == "#!" {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// writeShimExes puts php.exe and its siblings beside lerd.exe, which runs the
+// shim its own name says. They are hard links to lerd.exe, or copies where the
+// disk refuses one, and a .cmd would not do: cmd.exe will not start in a
+// \\wsl.localhost folder and falls back to C:\Windows. Shims lerd no longer
+// has are dropped, and a running one is renamed away as replaceRunningExe does.
+func writeShimExes(dir string, names []string) error {
+	lerdExe := filepath.Join(dir, "lerd.exe")
+	stale, _ := filepath.Glob(filepath.Join(dir, "*.cmd"))
+	exes, _ := filepath.Glob(filepath.Join(dir, "*.exe"))
+	for _, f := range exes {
+		if f != lerdExe {
+			stale = append(stale, f)
+		}
+	}
+	for _, f := range stale {
+		if os.Remove(f) != nil {
+			os.Remove(f + ".old")  //nolint:errcheck
+			os.Rename(f, f+".old") //nolint:errcheck // still running; the next setup clears it
+		}
+	}
+	for _, name := range names {
+		dst := filepath.Join(dir, name+".exe")
+		if os.Link(lerdExe, dst) == nil {
+			continue
+		}
+		b, err := os.ReadFile(lerdExe)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, b, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mountRoot is where WSL mounts Windows drives, given wslpath's answer for C:\.
+func mountRoot(cDrive string) string {
+	if cDrive == "" {
+		return ""
+	}
+	return path.Dir(strings.TrimSuffix(cDrive, "/"))
 }
 
 func windowsPath(p string) (string, error) {

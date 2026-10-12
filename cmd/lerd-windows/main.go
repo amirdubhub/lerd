@@ -1,6 +1,7 @@
 // Command lerd-windows builds lerd.exe, the Windows side of a WSL install.
 // Started with no config beside it, it is the installer (see setup.go).
-// `lerd <args>` runs lerd inside the distro from the current folder. `lerd
+// `lerd <args>` runs lerd inside the distro from the current folder, and the
+// same binary named php.exe, composer.exe and so on runs that shim. `lerd
 // --agent`, started at login by wsl:setup, boots the distro so lerd's services
 // come up without a terminal, then answers DNS for the site TLD on
 // 127.0.0.1:53, where a Windows NRPT rule sends it.
@@ -26,9 +27,10 @@ func main() {
 	}
 	dir := filepath.Dir(self)
 	b, err := os.ReadFile(filepath.Join(dir, winshim.ConfigName))
+	shim := winshim.ShimFromExe(self)
 	// Without the config beside it this is the downloaded installer, not the
 	// shim wsl:setup put on PATH.
-	if (err != nil && len(os.Args) == 1) || (len(os.Args) > 1 && os.Args[1] == "--setup") {
+	if shim == "" && ((err != nil && len(os.Args) == 1) || (len(os.Args) > 1 && os.Args[1] == "--setup")) {
 		err := setup()
 		if errors.Is(err, errHandedOff) {
 			return
@@ -46,6 +48,17 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fail(err)
+	}
+	if shim != "" {
+		args, err := winshim.ShimArgs(cfg, cwd, shim, os.Args[1:])
+		if err != nil {
+			fail(err)
+		}
+		os.Exit(runInDistro(args))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--agent" {
 		f, err := os.OpenFile(filepath.Join(dir, "lerd-agent.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err == nil {
@@ -53,17 +66,13 @@ func main() {
 		}
 		log.Fatal(agent(cfg, filepath.Join(dir, winshim.ConfigName)))
 	}
-	os.Exit(shim(cfg))
+	os.Exit(runInDistro(winshim.WSLArgs(cfg, cwd, os.Args[1:])))
 }
 
-func shim(cfg winshim.Config) int {
-	cwd, err := os.Getwd()
-	if err != nil {
-		fail(err)
-	}
-	cmd := exec.Command("wsl.exe", winshim.WSLArgs(cfg, cwd, os.Args[1:])...)
+func runInDistro(wslArgs []string) int {
+	cmd := exec.Command("wsl.exe", wslArgs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err = cmd.Run()
+	err := cmd.Run()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		return exit.ExitCode()
