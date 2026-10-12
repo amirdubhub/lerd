@@ -290,9 +290,9 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 	}
 
 	// ── WSL2 ─────────────────────────────────────────────────────────────────
-	// Only on WSL: the failure modes here (podman log driver, no tray host, slow
-	// 9P bind mounts) don't exist on a native Linux or macOS host. `lerd wsl:setup`
-	// fixes the first two in one shot.
+	// Only on WSL: the failure modes here (podman log driver, WSL kernels that
+	// break containers, no tray host, slow 9P bind mounts) don't exist on a
+	// native Linux or macOS host. `lerd wsl:setup` fixes the log driver and tray.
 	if wsl.IsWSL() {
 		section = "WSL2"
 		fmt.Fprintln(w, "\n[WSL2]")
@@ -311,6 +311,23 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 		if wsl.ResolvConfAwaitsRestart(string(wslConf), resolvTarget) {
 			warn("resolv.conf handed to systemd-resolved", "WSL has not restarted since lerd took it over, so .test may not resolve inside the distro")
 			rep.fixLast(manualFixWith("run `wsl --shutdown` from Windows, then reopen the distro"))
+		}
+
+		uid := strconv.Itoa(os.Getuid())
+		if ctl, readErr := os.ReadFile("/sys/fs/cgroup/user.slice/user-" + uid + ".slice/user@" + uid + ".service/cgroup.controllers"); readErr == nil {
+			if missing := wsl.MissingControllers(string(ctl), "pids"); len(missing) > 0 {
+				warn("cgroup controllers delegated", "systemd does not hand "+strings.Join(missing, ", ")+" to your user, so containers fail to start (podman#29749)")
+				rep.fixLast(manualFixWith("update WSL (`wsl --update`, then `wsl --shutdown`), or set cgroup_manager = \"cgroupfs\" under [engine] in ~/.config/containers/containers.conf"))
+			} else {
+				ok("cgroup controllers delegated")
+			}
+		}
+
+		if nv, nvErr := podman.Run("info", "--format", "{{.Host.NetworkBackendInfo.Version}}"); nvErr == nil {
+			kernel, _ := exec.Command("uname", "-r").Output()
+			if wsl.KernelTooOldForNetavark(strings.TrimSpace(string(kernel)), strings.TrimSpace(nv)) {
+				fail("WSL kernel supports netavark", strings.TrimSpace(nv)+" needs a WSL kernel from 6.18 on (NFT_FIB_INET), so containers get no network", "run `wsl --update` and then `wsl --shutdown` from Windows")
+			}
 		}
 
 		if trayUnitOff(trayUnitState()) {

@@ -14,6 +14,35 @@ func TestEncodePowerShell_UTF16LEBase64(t *testing.T) {
 	}
 }
 
+func TestMissingControllers(t *testing.T) {
+	if got := MissingControllers("cpu memory pids\n", "cpu", "memory", "pids"); len(got) != 0 {
+		t.Errorf("all delegated, got %v", got)
+	}
+	if got := MissingControllers("cpu memory\n", "cpu", "memory", "pids"); len(got) != 1 || got[0] != "pids" {
+		t.Errorf("pids missing, got %v", got)
+	}
+}
+
+// netavark 2 needs NFT_FIB_INET, which WSL kernels gain in 6.18.
+func TestKernelTooOldForNetavark(t *testing.T) {
+	cases := []struct {
+		kernel, netavark string
+		want             bool
+	}{
+		{"5.15.167.4-microsoft-standard-WSL2", "netavark 2.0.1", true},
+		{"6.6.87.2-microsoft-standard-WSL2", "netavark 2.1.0", true},
+		{"6.18.40.1-microsoft-standard-WSL2", "netavark 2.1.0", false},
+		{"6.6.87.2-microsoft-standard-WSL2", "netavark 1.4.0", false},
+		{"6.6.87.2-microsoft-standard-WSL2", "", false},
+		{"garbage", "netavark 2.0.0", false},
+	}
+	for _, c := range cases {
+		if got := KernelTooOldForNetavark(c.kernel, c.netavark); got != c.want {
+			t.Errorf("KernelTooOldForNetavark(%q, %q) = %v, want %v", c.kernel, c.netavark, got, c.want)
+		}
+	}
+}
+
 func TestIsWindowsDrivePath(t *testing.T) {
 	for p, want := range map[string]bool{
 		"/mnt/c":                true,

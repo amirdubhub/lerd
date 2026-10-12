@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -154,6 +156,46 @@ func ResolvedUpstreamDropin(nameservers []string) string {
 // wslpath so a custom automount root is honoured.
 func WindowsTool(name string) string {
 	return windowsFile(`C:\Windows\System32\`+name, name)
+}
+
+// MissingControllers lists the controllers in want that a cgroup.controllers
+// file does not delegate. Without pids, crun refuses every container
+// (podman#29749, seen on some WSL kernels).
+func MissingControllers(controllers string, want ...string) []string {
+	have := strings.Fields(controllers)
+	var missing []string
+	for _, c := range want {
+		if !slices.Contains(have, c) {
+			missing = append(missing, c)
+		}
+	}
+	return missing
+}
+
+// KernelTooOldForNetavark reports whether a kernel release predates 6.18 while
+// netavark is at 2 or later, whose nftables ruleset needs NFT_FIB_INET; older
+// WSL kernels lack it and no container gets a network. netavarkVersion is what
+// podman reports, "netavark 2.1.0".
+func KernelTooOldForNetavark(kernelRelease, netavarkVersion string) bool {
+	// major reads "6.18.40.1-microsoft…" as 6 and 18.
+	major := func(s string) (int, int, bool) {
+		parts := strings.SplitN(s, ".", 3)
+		if len(parts) < 2 {
+			return 0, 0, false
+		}
+		num := func(p string) (int, error) {
+			return strconv.Atoi(p[:len(p)-len(strings.TrimLeftFunc(p, unicode.IsDigit))])
+		}
+		a, errA := num(parts[0])
+		b, errB := num(parts[1])
+		return a, b, errA == nil && errB == nil
+	}
+	nv, _, ok := major(strings.TrimPrefix(netavarkVersion, "netavark "))
+	if !ok || nv < 2 {
+		return false
+	}
+	km, kn, ok := major(kernelRelease)
+	return ok && (km < 6 || km == 6 && kn < 18)
 }
 
 // isWindowsDrivePath reports whether p is on a drive WSL mounts from Windows,
