@@ -160,7 +160,7 @@ wsl --shutdown
 
 ## 5. Keep projects in `$HOME`, never in `/mnt/c/...`
 
-This is the single biggest performance lever on WSL2. Bind mounts from `/mnt/c/...` into containers route through 9P, which is roughly an order of magnitude slower than the WSL2 ext4 filesystem. `composer install` and `npm install` are where you feel it.
+This is the single biggest performance lever on WSL2. Bind mounts from `/mnt/c/...` into containers route through 9P, which is roughly an order of magnitude slower than the WSL2 ext4 filesystem. Measured on a fresh Laravel app, `composer dump-autoload` took 31 s on `/mnt/c` against 3.3 s on ext4, `artisan` commands ran 4 to 8 times slower, and a page took over a second whenever OPcache rechecked its files. File watchers also miss every change there, since inotify events don't cross the 9P mount, so Vite's hot reload stays silent. `lerd link`, `lerd park` and `lerd doctor` warn when a project sits on a Windows drive.
 
 ```bash
 # Avoid
@@ -174,6 +174,8 @@ git clone git@github.com:org/myapp.git
 cd myapp
 lerd link
 ```
+
+To move an existing project, copy it and link the copy: `cp -a /mnt/c/Users/you/projects/myapp ~/projects/`, then `lerd unlink` in the old folder and `lerd link` in the new one. Windows apps reach the copy at `\\wsl.localhost\<distro>\home\<you>\projects\myapp`, and editing it from there still fires the watchers.
 
 If you edit from VS Code on Windows, use the Remote-WSL extension and launch from the WSL side with `code .` from inside `~/projects/myapp`. The Windows VS Code process will attach to the WSL server, but the files stay on ext4.
 

@@ -323,12 +323,13 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 		if reg, regErr := config.LoadSites(); regErr == nil {
 			var onMnt []string
 			for _, s := range reg.Sites {
-				if strings.HasPrefix(s.Path, "/mnt/") {
+				if wsl.OnWindowsDrive(s.Path) {
 					onMnt = append(onMnt, s.Name)
 				}
 			}
 			if len(onMnt) > 0 {
 				warn("project paths on the WSL fs", "slow 9P mounts for: "+strings.Join(onMnt, ", ")+", move them under $HOME")
+				rep.fixLast(manualFixWith("copy each project under $HOME (`cp -a /mnt/c/... ~/`), `lerd unlink` the old one and `lerd link` the copy; open it from Windows at \\\\wsl.localhost\\" + wsl.Distro() + "\\home\\..."))
 			} else {
 				ok("project paths on the WSL fs")
 			}

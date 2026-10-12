@@ -56,6 +56,23 @@ func TestRemoveWindowsSideScript_DropsToastAppID(t *testing.T) {
 	}
 }
 
+func TestWindowsDriveWarning(t *testing.T) {
+	got := windowsDriveWarning("/mnt/c/Users/me/app", "/home/me", "Ubuntu-24.04")
+	for _, want := range []string{
+		"/mnt/c/Users/me/app is on a Windows drive",
+		"cp -a /mnt/c/Users/me/app /home/me/app",
+		`\\wsl.localhost\Ubuntu-24.04\home\me\app`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning lacks %q:\n%s", want, got)
+		}
+	}
+	// Without the distro name the Windows path is left out rather than wrong.
+	if got := windowsDriveWarning("/mnt/c/app", "/home/me", ""); strings.Contains(got, "wsl.localhost") {
+		t.Errorf("no distro, no UNC path:\n%s", got)
+	}
+}
+
 func TestAgentRunValue_Headless(t *testing.T) {
 	got := agentRunValue(`C:\Users\me\AppData\Local\lerd\bin`)
 	want := `conhost.exe --headless "C:\Users\me\AppData\Local\lerd\bin\lerd.exe" --agent`

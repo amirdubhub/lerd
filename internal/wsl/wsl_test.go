@@ -14,6 +14,24 @@ func TestEncodePowerShell_UTF16LEBase64(t *testing.T) {
 	}
 }
 
+func TestIsWindowsDrivePath(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/mnt/c":                true,
+		"/mnt/c/Users/me/app":   true,
+		"/mnt/D/work":           true,
+		"/mnt/wsl/shared":       false, // tmpfs WSL shares between distros
+		"/mnt/wslg/runtime-dir": false,
+		"/mnt/cdrom":            false,
+		"/home/me/app":          false,
+		"/mnt":                  false,
+		"/srv/mnt/c/app":        false,
+	} {
+		if got := isWindowsDrivePath(p); got != want {
+			t.Errorf("isWindowsDrivePath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
 func TestIsWSL_EnvSignal(t *testing.T) {
 	t.Setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
 	if !IsWSL() {

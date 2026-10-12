@@ -5,11 +5,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/geodro/lerd/internal/certs"
 	"github.com/geodro/lerd/internal/config"
+	"github.com/geodro/lerd/internal/feedback"
 	"github.com/geodro/lerd/internal/wsl"
 	"github.com/spf13/cobra"
 )
@@ -268,4 +270,24 @@ func NewWSLTermCmd() *cobra.Command {
 			return err
 		},
 	}
+}
+
+// windowsDriveWarning explains why a project on a Windows drive is slow and how
+// to move it, with the path Windows editors reach the moved copy at.
+func windowsDriveWarning(dir, home, distro string) string {
+	dst := path.Join(home, path.Base(dir))
+	msg := fmt.Sprintf("%s is on a Windows drive: pages, composer and artisan run several times slower over WSL's 9p mount, and file watchers miss changes. Move it with `cp -a %s %s` and link it from there", dir, dir, dst)
+	if distro != "" {
+		msg += `; Windows editors open it at \\wsl.localhost\` + distro + strings.ReplaceAll(dst, "/", `\`)
+	}
+	return msg
+}
+
+// warnWindowsDrive prints windowsDriveWarning when dir is on a Windows drive.
+func warnWindowsDrive(dir string) {
+	if !wsl.OnWindowsDrive(dir) {
+		return
+	}
+	home, _ := os.UserHomeDir()
+	feedback.Warn("%s", windowsDriveWarning(dir, home, wsl.Distro()))
 }

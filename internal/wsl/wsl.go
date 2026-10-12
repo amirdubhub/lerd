@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf16"
 )
 
@@ -153,6 +154,24 @@ func ResolvedUpstreamDropin(nameservers []string) string {
 // wslpath so a custom automount root is honoured.
 func WindowsTool(name string) string {
 	return windowsFile(`C:\Windows\System32\`+name, name)
+}
+
+// isWindowsDrivePath reports whether p is on a drive WSL mounts from Windows,
+// /mnt/<letter>, as opposed to /mnt/wsl and /mnt/wslg, which are WSL's own.
+func isWindowsDrivePath(p string) bool {
+	rest, ok := strings.CutPrefix(p, "/mnt/")
+	if !ok || rest == "" {
+		return false
+	}
+	drive, _, _ := strings.Cut(rest, "/")
+	return len(drive) == 1 && unicode.IsLetter(rune(drive[0]))
+}
+
+// OnWindowsDrive reports whether p is a Windows drive seen from WSL. Those are
+// served over 9p (drvfs): every file access is a round trip to Windows, and
+// inotify sees no change made there.
+func OnWindowsDrive(p string) bool {
+	return isWindowsDrivePath(p) && IsWSL()
 }
 
 // EncodePowerShell renders script for -EncodedCommand (base64 of UTF-16LE),
