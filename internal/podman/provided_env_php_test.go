@@ -80,6 +80,16 @@ func TestDumpBridge_LoadsProvidedEnv(t *testing.T) {
 	if out := run("app", otherDir); out != nothing {
 		t.Errorf("a script outside the file's roots must load nothing, got %s", out)
 	}
+
+	// PsySH throws whatever error_get_last() holds when stream_select is
+	// interrupted, so a site without a provided env must leave it empty.
+	lastErr := filepath.Join(siteDir, "last-error.php")
+	if err := os.WriteFile(lastErr, []byte(`<?php echo json_encode(error_get_last());`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("missing", siteDir); out != "null" {
+		t.Errorf("a site without a provided env must leave no error behind, got %s", out)
+	}
 }
 
 // TestFPMQuadlet_ProvidedEnvLinesPerPlatform checks the FPM unit mounts the
