@@ -33,7 +33,7 @@ Every step checks before it acts, so running it again after a failure picks up w
 - **lerd at login.** A background agent starts with Windows and boots the distro, so sites and the dashboard are up without a WSL window open. WSL's idle timeout is switched off in `%USERPROFILE%\.wslconfig`, which otherwise stops the distro, and every container with it, seconds after the last terminal closes.
 - **`.test` in Windows browsers, wildcards included.** The agent answers DNS for your site TLD on `127.0.0.1`, and a Windows DNS rule (NRPT) sends the TLD there. It is the one step that needs administrator rights. Answering DNS rather than writing hosts file lines is what keeps `*.branch.site.test` worktree domains working.
 - **HTTPS trusted by Windows browsers.** lerd's local CA is imported into your Windows user's trust store.
-- **Mirrored networking**, so Windows reaches WSL's loopback, plus systemd, the Podman `events_logger` fix and the masked tray covered below.
+- **Mirrored networking**, so Windows reaches WSL's loopback, plus systemd, the Podman `events_logger` fix and the tray turned off, covered below.
 
 It is idempotent, so run it again whenever something drifts. `lerd doctor` adds a `[WSL2]` section that re-checks the Linux side on demand.
 

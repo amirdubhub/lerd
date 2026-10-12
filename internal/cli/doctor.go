@@ -306,12 +306,11 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 			rep.fixLast(manualFixWith("run `lerd wsl:setup` (it needs sudo to write the podman config)"))
 		}
 
-		out, _ := exec.Command("systemctl", "--user", "is-enabled", "lerd-tray.service").Output()
-		if strings.TrimSpace(string(out)) == "masked" {
-			ok("lerd-tray masked (no WSL tray host)")
+		if trayUnitOff(trayUnitState()) {
+			ok("lerd-tray off (no WSL tray host)")
 		} else {
 			warn("lerd-tray on WSL", "no tray host on WSL2 so the unit fails, run lerd wsl:setup")
-			rep.fixLast(manualFixWith("run `lerd wsl:setup` (it needs sudo to write the podman config)"))
+			rep.fixLast(manualFixWith("run `lerd wsl:setup`"))
 		}
 
 		if reg, regErr := config.LoadSites(); regErr == nil {

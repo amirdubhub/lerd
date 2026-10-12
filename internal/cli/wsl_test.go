@@ -102,3 +102,23 @@ func TestPinFoldersScript_QuotesPaths(t *testing.T) {
 		t.Errorf("script does not pin to Quick access:\n%s", got)
 	}
 }
+
+// lerd install rewrites the tray unit and disables it on WSL, so off means not
+// enabled and not running; a mask from an older wsl:setup counts too.
+func TestTrayUnitOff(t *testing.T) {
+	for _, c := range []struct {
+		enabled, active string
+		want            bool
+	}{
+		{"disabled", "inactive", true},
+		{"masked", "inactive", true},
+		{"", "inactive", true},
+		{"enabled", "inactive", false},
+		{"disabled", "active", false},
+		{"disabled", "activating", false},
+	} {
+		if got := trayUnitOff(c.enabled, c.active); got != c.want {
+			t.Errorf("trayUnitOff(%q, %q) = %v, want %v", c.enabled, c.active, got, c.want)
+		}
+	}
+}

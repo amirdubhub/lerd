@@ -85,11 +85,11 @@ func runWSLSetup(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(w, "  ! couldn't reach certutil.exe; import the CA manually (see the WSL2 guide)")
 	}
 
-	// 5. tray — no StatusNotifier host on WSL, so mask it to silence the failing unit.
-	if maskTrayUnit() {
-		fmt.Fprintln(w, "  ✓ masked lerd-tray (no tray host on WSL2)")
+	// 5. tray — no StatusNotifier host on WSL, so keep the unit off.
+	if turnOffTrayUnit() {
+		fmt.Fprintln(w, "  ✓ turned off lerd-tray (no tray host on WSL2)")
 	} else {
-		fmt.Fprintln(w, "  - lerd-tray already masked or absent")
+		fmt.Fprintln(w, "  - lerd-tray already off")
 	}
 
 	// 6. Windows side: lerd.exe on PATH, its login agent, and .test for Windows.
@@ -222,14 +222,26 @@ func copyFileContents(src, dst string) error {
 	return os.WriteFile(dst, b, 0o644)
 }
 
-// maskTrayUnit masks lerd-tray.service, returning true only when it actually
-// changed state (so the caller can distinguish "masked it" from "already off").
-func maskTrayUnit() bool {
-	out, _ := exec.Command("systemctl", "--user", "is-enabled", "lerd-tray.service").Output()
-	if strings.TrimSpace(string(out)) == "masked" {
+// trayUnitOff reports whether lerd-tray is neither enabled nor running, given
+// systemctl's is-enabled and is-active answers. Masking it is not the goal:
+// lerd install rewrites the unit file, so a mask would not survive an update.
+func trayUnitOff(enabled, active string) bool {
+	return enabled != "enabled" && active != "active" && active != "activating"
+}
+
+func trayUnitState() (enabled, active string) {
+	e, _ := exec.Command("systemctl", "--user", "is-enabled", "lerd-tray.service").Output()
+	a, _ := exec.Command("systemctl", "--user", "is-active", "lerd-tray.service").Output()
+	return strings.TrimSpace(string(e)), strings.TrimSpace(string(a))
+}
+
+// turnOffTrayUnit stops and disables lerd-tray, reporting whether it had to.
+func turnOffTrayUnit() bool {
+	if trayUnitOff(trayUnitState()) {
 		return false
 	}
-	return exec.Command("systemctl", "--user", "mask", "lerd-tray.service").Run() == nil
+	disableTrayUnit()
+	return true
 }
 
 // NewWSLTermCmd returns the hidden `lerd wsl:term`, which a Windows Terminal

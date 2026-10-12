@@ -23,6 +23,7 @@ func TestMain(m *testing.M) {
 	claudeAvailable = func() bool { return false }
 	claudeMCP = func(args ...string) ([]byte, error) { return nil, nil }
 	hostbin.ExtraDirs = func() []string { return nil }
+	noTrayHost = func() bool { return false }
 	os.Exit(m.Run())
 }
 

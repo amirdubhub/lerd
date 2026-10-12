@@ -30,7 +30,6 @@ import (
 	lerdSystemd "github.com/geodro/lerd/internal/systemd"
 	"github.com/geodro/lerd/internal/tray"
 	"github.com/geodro/lerd/internal/version"
-	"github.com/geodro/lerd/internal/wsl"
 	"github.com/spf13/cobra"
 )
 
@@ -883,7 +882,7 @@ func runInstall(cmd *cobra.Command, _ []string) error {
 		// absent, which an immutable image can't install without layering a
 		// package and rebooting. Leave the unit on disk but don't run it, or
 		// the failures drag the whole systemd user session to "degraded".
-		if !trayEnabled() || wsl.IsWSL() {
+		if !trayEnabled() {
 			// Turned off on purpose, or on WSL, where the Windows desktop app
 			// owns the tray: why it couldn't run is not worth a note.
 			disableTrayUnit()
