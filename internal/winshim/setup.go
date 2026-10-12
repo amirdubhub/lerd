@@ -3,6 +3,7 @@ package winshim
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf16"
 )
@@ -18,6 +19,20 @@ func DecodeWSLOutput(out []byte) string {
 		return string(utf16.Decode(u))
 	}
 	return string(out)
+}
+
+var wslVersionLine = regexp.MustCompile(`:\s*\d+\.\d+\.\d+\.\d+\s*$`)
+
+// WSLVersionReported reports whether `wsl --version` came from an installed
+// WSL. Its labels are translated, so this looks for the version number the
+// first line ends in, which the inbox stub never prints.
+func WSLVersionReported(out []byte) bool {
+	for _, l := range strings.Split(DecodeWSLOutput(out), "\n") {
+		if l = strings.TrimSpace(strings.Trim(l, "\x00")); l != "" {
+			return wslVersionLine.MatchString(l)
+		}
+	}
+	return false
 }
 
 // ParseDistroList reads the names `wsl -l -q` prints.

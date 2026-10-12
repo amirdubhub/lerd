@@ -24,6 +24,25 @@ func TestParseDistroList_UTF16(t *testing.T) {
 	}
 }
 
+func TestWSLVersionReported(t *testing.T) {
+	cases := map[string]struct {
+		out  []byte
+		want bool
+	}{
+		"english":     {utf16le("WSL version: 2.4.13.0\r\nKernel version: 5.15.167.4-1\r\n"), true},
+		"spanish":     {utf16le("Versión de WSL: 3.0.1.0\r\n\r\nVersión de kernel: 6.18.40.1-1\r\n"), true},
+		"utf8":        {[]byte("WSL version: 2.4.13.0\n"), true},
+		"stub":        {utf16le("Windows Subsystem for Linux is not installed. You can install by running 'wsl.exe --install'.\r\n"), false},
+		"kernel only": {utf16le("Kernel version: 5.15.167.4-1\r\n"), false},
+		"empty":       {nil, false},
+	}
+	for name, c := range cases {
+		if got := WSLVersionReported(c.out); got != c.want {
+			t.Errorf("%s: got %v, want %v", name, got, c.want)
+		}
+	}
+}
+
 func TestParseDistroList_PlainUTF8(t *testing.T) {
 	// With WSL_UTF8=1 set in the environment wsl.exe writes UTF-8 instead.
 	got := ParseDistroList([]byte("Ubuntu-24.04\n"))

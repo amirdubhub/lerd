@@ -144,7 +144,7 @@ func ensureWSLPackage() error {
 
 func wslInstalled() bool {
 	out, err := exec.Command("wsl.exe", "--version").Output()
-	return err == nil && strings.Contains(winshim.DecodeWSLOutput(out), "WSL version")
+	return err == nil && winshim.WSLVersionReported(out)
 }
 
 func ensureDistro() error {
