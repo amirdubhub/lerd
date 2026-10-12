@@ -93,8 +93,26 @@ func agent(cfg winshim.Config, confPath string) error {
 	}
 	// Starting any process boots the distro, and with it systemd and lerd's
 	// services; instanceIdleTimeout=-1 keeps it up after this one exits.
-	if out, err := exec.Command("wsl.exe", "-d", cfg.Distro, "--exec", "/bin/true").CombinedOutput(); err != nil {
-		log.Printf("booting %s: %v: %s", cfg.Distro, err, out)
+	boot := func() {
+		if out, err := exec.Command("wsl.exe", "-d", cfg.Distro, "--exec", "/bin/true").CombinedOutput(); err != nil {
+			log.Printf("booting %s: %v: %s", cfg.Distro, err, out)
+		}
+	}
+	boot()
+	waker := &winshim.Waker{
+		Alive: func() bool {
+			c, err := net.DialTimeout("tcp", "127.0.0.1:7073", 500*time.Millisecond)
+			if err == nil {
+				c.Close()
+			}
+			return err == nil
+		},
+		Boot: func() {
+			log.Printf("a site was looked up while lerd was down, booting %s", cfg.Distro)
+			boot()
+		},
+		Now:      time.Now,
+		Interval: 30 * time.Second,
 	}
 	if cfg.TLD == "" {
 		log.Print("no tld configured, not answering DNS")
@@ -124,6 +142,7 @@ func agent(cfg winshim.Config, confPath string) error {
 			continue // not a query we can parse; nothing sensible to reply
 		}
 		pc.WriteTo(resp, addr) //nolint:errcheck
+		go waker.Check()
 	}
 }
 
