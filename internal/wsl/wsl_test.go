@@ -175,3 +175,23 @@ func TestWindowsTool_PrefersPath(t *testing.T) {
 		t.Errorf("got %q, want %q", got, tool)
 	}
 }
+
+// wsl.conf is read only at distro start, so until WSL restarts it keeps
+// rewriting resolv.conf over the handover to systemd-resolved.
+func TestResolvConfAwaitsRestart(t *testing.T) {
+	handedOver := "[boot]\nsystemd=true\n[network]\ngenerateResolvConf = false\n"
+	for _, c := range []struct {
+		wslConf, target string
+		want            bool
+	}{
+		{handedOver, "/mnt/wsl/resolv.conf", true},
+		{handedOver, "../run/systemd/resolve/stub-resolv.conf", false},
+		{handedOver, "/run/systemd/resolve/stub-resolv.conf", false},
+		{"[boot]\nsystemd=true\n", "/mnt/wsl/resolv.conf", false},
+		{"[network]\ngenerateResolvConf=true\n", "/mnt/wsl/resolv.conf", false},
+	} {
+		if got := ResolvConfAwaitsRestart(c.wslConf, c.target); got != c.want {
+			t.Errorf("ResolvConfAwaitsRestart(%q, %q) = %v, want %v", c.wslConf, c.target, got, c.want)
+		}
+	}
+}

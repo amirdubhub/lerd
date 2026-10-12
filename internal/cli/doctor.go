@@ -306,6 +306,13 @@ func runDoctorInto(w io.Writer, useColor bool) (DoctorReport, error) {
 			rep.fixLast(manualFixWith("run `lerd wsl:setup` (it needs sudo to write the podman config)"))
 		}
 
+		wslConf, _ := os.ReadFile("/etc/wsl.conf")
+		resolvTarget, _ := os.Readlink("/etc/resolv.conf")
+		if wsl.ResolvConfAwaitsRestart(string(wslConf), resolvTarget) {
+			warn("resolv.conf handed to systemd-resolved", "WSL has not restarted since lerd took it over, so .test may not resolve inside the distro")
+			rep.fixLast(manualFixWith("run `wsl --shutdown` from Windows, then reopen the distro"))
+		}
+
 		if trayUnitOff(trayUnitState()) {
 			ok("lerd-tray off (no WSL tray host)")
 		} else {

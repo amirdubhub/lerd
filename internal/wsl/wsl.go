@@ -164,3 +164,13 @@ func windowsFile(winPath, name string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+var generateResolvConfOff = regexp.MustCompile(`(?im)^\s*generateResolvConf\s*=\s*false\s*$`)
+
+// ResolvConfAwaitsRestart reports a resolv.conf handed to systemd-resolved in
+// wsl.conf that WSL has not let go of yet: wsl.conf is read only when the
+// distro starts, so until a `wsl --shutdown` WSL keeps pointing resolv.conf,
+// given here as its symlink target, back at its own proxy.
+func ResolvConfAwaitsRestart(wslConf, resolvTarget string) bool {
+	return generateResolvConfOff.MatchString(wslConf) && !strings.HasSuffix(resolvTarget, "/run/systemd/resolve/stub-resolv.conf")
+}
