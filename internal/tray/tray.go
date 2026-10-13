@@ -3,6 +3,7 @@
 package tray
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -494,7 +495,7 @@ func handleDash(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
 		// `lerd dashboard` owns the whole choice: the desktop app, a Chromium
 		// app window or a browser tab, starting the stack first when it is down.
-		go runAndRefresh(lerdCmd("dashboard"), refresh)
+		go runAction(refresh, "dashboard")
 	}
 }
 
@@ -508,7 +509,7 @@ func handleToggle(item *systray.MenuItem, refresh func()) {
 			} else {
 				arg = "start"
 			}
-			runAndRefresh(lerdCmd(arg), refresh)
+			runAction(refresh, arg)
 		}()
 	}
 }
@@ -521,7 +522,7 @@ func handleAutostart(item *systray.MenuItem, refresh func()) {
 		if backend.Settings().Autostart {
 			arg = "disable"
 		}
-		runAndRefresh(lerdCmd("autostart", arg), refresh)
+		runAction(refresh, "autostart", arg)
 	}
 }
 
@@ -531,25 +532,25 @@ func handleLAN(item *systray.MenuItem, refresh func()) {
 		if backend.Settings().LANExposed {
 			arg = "unexpose"
 		}
-		runAndRefresh(lerdCmd("lan", arg), refresh)
+		runAction(refresh, "lan", arg)
 	}
 }
 
 func handleLANServices(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
-		runAndRefresh(lerdCmd("lan", "services", offOn(backend.Settings().LANServicesExposed)), refresh)
+		runAction(refresh, "lan", "services", offOn(backend.Settings().LANServicesExposed))
 	}
 }
 
 func handleDumps(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
-		runAndRefresh(lerdCmd("dump", offOn(backend.Settings().Dumps)), refresh)
+		runAction(refresh, "dump", offOn(backend.Settings().Dumps))
 	}
 }
 
 func handleNotifications(item *systray.MenuItem, refresh func()) {
 	for range item.ClickedCh {
-		runAndRefresh(lerdCmd("notify", offOn(backend.Settings().Notifications)), refresh)
+		runAction(refresh, "notify", offOn(backend.Settings().Notifications))
 	}
 }
 
@@ -567,15 +568,27 @@ func handleIconStyle(item *systray.MenuItem, refresh func()) {
 		if backend.Settings().HighContrastIcon {
 			style = "default"
 		}
-		runAndRefresh(lerdCmd("tray", "icon", style), refresh)
+		runAction(refresh, "tray", "icon", style)
 	}
 }
 
-// runAndRefresh waits for cmd to finish then calls refresh, so the menu
-// redraws against the post-command state instead of the next poll tick.
-// Errors are swallowed; the user sees the resulting state, not the trace.
-func runAndRefresh(cmd *exec.Cmd, refresh func()) {
-	_ = cmd.Run()
+// runAction runs `lerd args`, reports the outcome when the backend is a
+// Notifier, then calls refresh so the menu redraws against the post-command
+// state instead of the next poll tick.
+func runAction(refresh func(), args ...string) {
+	cmd := lerdCmd(args...)
+	var stderr bytes.Buffer
+	if cmd.Stderr != nil {
+		cmd.Stderr = io.MultiWriter(cmd.Stderr, &stderr)
+	} else {
+		cmd.Stderr = &stderr
+	}
+	err := cmd.Run()
+	if n, ok := backend.(Notifier); ok {
+		if title, body, show := actionMessage(args, err, stderr.String()); show {
+			n.Notify(title, body, err != nil)
+		}
+	}
 	refresh()
 }
 
@@ -607,7 +620,7 @@ func handleUpdate(item *systray.MenuItem) {
 func handleQuit(item *systray.MenuItem, cancel context.CancelFunc, refresh func()) {
 	for range item.ClickedCh {
 		if resident {
-			runAndRefresh(lerdCmd("quit"), refresh)
+			runAction(refresh, "quit")
 			continue
 		}
 		cancel()

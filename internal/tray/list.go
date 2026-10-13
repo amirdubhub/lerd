@@ -89,7 +89,7 @@ func (l *menuList) watch(refresh func()) {
 		go func(idx int) {
 			for range l.items[idx].ClickedCh {
 				if args := l.argsAt(idx); len(args) > 0 {
-					runAndRefresh(lerdCmd(args...), refresh)
+					runAction(refresh, args...)
 				}
 			}
 		}(i)

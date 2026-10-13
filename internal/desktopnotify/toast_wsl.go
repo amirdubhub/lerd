@@ -77,6 +77,12 @@ $d.LoadXml($xml)
 `
 }
 
+// ToastScript is toastScript for the Windows tray, which runs PowerShell itself.
+// On Windows IconPath writes the logo where the script looks for it.
+func ToastScript(req Request) string {
+	return toastScript(req, IconPath())
+}
+
 // toastSupported reports whether Windows PowerShell is reachable over interop.
 func toastSupported() bool {
 	return wsl.PowerShell() != ""

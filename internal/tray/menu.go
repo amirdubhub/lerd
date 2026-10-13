@@ -4,6 +4,7 @@ package tray
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/getlantern/systray"
 )
@@ -189,6 +190,71 @@ func statusDot(ok bool) string {
 		return "🟢"
 	}
 	return "🔴"
+}
+
+// actionMessage is the notification for a finished menu action: what was done,
+// or what failed with the last line lerd printed. Opening the dashboard shows
+// itself, so only its failure is reported.
+func actionMessage(args []string, err error, stderr string) (title, body string, show bool) {
+	doing, done := describeAction(args)
+	if err != nil {
+		return "Couldn't " + doing, lastLine(stderr, err.Error()), true
+	}
+	return done, "", done != ""
+}
+
+// describeAction names a menu action as a goal ("start redis") and as a result
+// ("redis started").
+func describeAction(args []string) (doing, done string) {
+	arg := func(i int) string {
+		if i < len(args) {
+			return args[i]
+		}
+		return ""
+	}
+	toggle := func(label string, on bool) (string, string) {
+		state := "off"
+		if on {
+			state = "on"
+		}
+		return "turn " + strings.ToLower(label) + " " + state, label + " " + state
+	}
+	switch arg(0) {
+	case "start":
+		return "start Lerd", "Lerd started"
+	case "stop", "quit":
+		return "stop Lerd", "Lerd stopped"
+	case "dashboard":
+		return "open the dashboard", ""
+	case "service":
+		return arg(1) + " " + arg(2), arg(2) + " " + map[string]string{"start": "started", "stop": "stopped"}[arg(1)]
+	case "use":
+		return "switch to PHP " + arg(1), "PHP " + arg(1) + " is the default"
+	case "autostart":
+		return toggle("Autostart", arg(1) == "enable")
+	case "lan":
+		if arg(1) == "services" {
+			return toggle("Services on the LAN", arg(2) == "on")
+		}
+		return toggle("LAN access", arg(1) == "expose")
+	case "dump":
+		return toggle("Dumps", arg(1) == "on")
+	case "notify":
+		return toggle("Notifications", arg(1) == "on")
+	case "tray":
+		return "change the tray icon", "Tray icon: " + arg(2)
+	}
+	cmd := "lerd " + strings.Join(args, " ")
+	return "run " + cmd, cmd + " done"
+}
+
+// lastLine is the last non-empty line of out, or fallback when there is none.
+func lastLine(out, fallback string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if l := strings.TrimSpace(lines[len(lines)-1]); l != "" {
+		return l
+	}
+	return fallback
 }
 
 // toggleTitle renders a settings toggle, e.g. "Notifications: ✔ On".

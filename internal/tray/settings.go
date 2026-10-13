@@ -31,3 +31,9 @@ type Backend interface {
 	Settings() Settings
 	Command(args ...string) *exec.Cmd
 }
+
+// Notifier is a Backend that reports how each menu action went, as the Windows
+// tray does with toasts.
+type Notifier interface {
+	Notify(title, body string, failed bool)
+}
