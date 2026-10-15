@@ -218,6 +218,7 @@ func Start(currentVersion string) error {
 	mux.HandleFunc("/api/sites", withCORS(handleSites))
 	mux.HandleFunc("/api/services", withCORS(handleServices))
 	mux.HandleFunc("/api/ws", handleWS)
+	mux.HandleFunc("/api/desktop/ws", handleDesktopWS)
 	mux.HandleFunc("/api/lsp/php", handleLSPPhp)
 	mux.HandleFunc("/api/webhooks/mailpit", handleMailpitWebhook)
 	mux.HandleFunc("/api/push/vapid-public-key", withCORS(handlePushVAPIDPublicKey))

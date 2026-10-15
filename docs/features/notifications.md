@@ -66,6 +66,8 @@ Clicking a notification focuses the dashboard (or launches the PWA if closed) an
 
 With the **native** sink selected the daemon skips everything below and posts once to `org.freedesktop.Notifications`, unless a dashboard window has focus. A desktop popup for something you are already looking at is noise, so while the app or a dashboard tab is focused nothing is raised on the desktop, on either sink: the event still rides the websocket to the page, Web Push is skipped since there is a live page to receive it, and delivery resumes the moment you switch away. Each connection reports its own focus, so a second window left in the background never suppresses anything.
 
+A desktop app listening on `/api/desktop/ws` takes the native notifications over: whatever the daemon would have posted after the rules above goes to the app instead, which raises it itself. The Windows desktop app does this, so its notifications open its own window rather than coming from PowerShell inside WSL. With no app listening the daemon posts them as before.
+
 Nothing is lost when the desktop is skipped: the dashboard shows the event in the page as a toast in the bottom-right corner. Informational ones clear themselves after a few seconds; a failed operation stays until you dismiss it, carries a link to the thing that failed, and is shown even when notifications are muted or the desktop popup already fired.
 
 Under the native sink the page has no browser preferences of its own to consult, since that pane is hidden, so what reaches the bell follows the daemon's resolved per-kind `notifications.kinds` settings. A category the daemon posted to the desktop is recorded in the notification centre; one it filtered out is not.
@@ -115,6 +117,7 @@ Subscriptions that the push service retires (HTTP 410 Gone, 404 Not Found) are p
 | `GET` | `/api/notifications/target` | Returns the delivery sink, whether native is supported on this host, and the resolved native category prefs. |
 | `POST` | `/api/notifications/target` | Sets the delivery sink to `browser` or `native`. |
 | `POST` | `/api/notifications/kinds` | Toggles one native category (`{kind, enabled}`). |
+| `GET` | `/api/desktop/ws` | WebSocket for a desktop app that raises native notifications itself. Each text frame is `{"type": "notification", "title", "body", "route", "urgency"}`, with `urgency` one of `low`, `normal` or `critical`. Like the tray actions, a remote session reaches it only with full access on. |
 
 All endpoints sit behind the standard `withRemoteControlGate` (loopback-only by default). The mailpit webhook at `/api/webhooks/mailpit` has its own explicit bypass, the threat surface is bounded (a LAN attacker could spoof fake mail notifications) and lerd is a local-dev tool.
 

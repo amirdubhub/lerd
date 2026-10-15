@@ -198,6 +198,8 @@ Double-click `lerd-rootCA.crt`, pick **Place all certificates in the following s
 
 With the native sink (`lerd notify target native`), `lerd-ui` raises Windows toasts through PowerShell, titled **Lerd** with its logo, and nothing has to be open for them to appear. Clicking one opens the dashboard at the right view in your default Windows browser. Banners, sound and Do Not Disturb are set per app under **Settings → System → Notifications → Lerd**. `lerd uninstall` removes the app entry Windows keeps for them.
 
+While the Lerd desktop app is running it shows these notifications itself, under the same name, logo and settings entry, and clicking one opens the app at the right view. `lerd-ui` hands them over through `/api/desktop/ws` and decides what is raised just as before: the global toggle, the category toggles and the focused-window rule all still apply. If the app is not running, the PowerShell toasts take over again.
+
 ## Verifying the install
 
 Before running `lerd link` on your first project, sanity check that all the pieces are in place:
