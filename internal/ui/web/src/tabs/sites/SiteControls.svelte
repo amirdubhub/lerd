@@ -468,8 +468,9 @@
           asleep={asleepWorkers.has('stripe')}
           loading={isPending('stripe')}
           webhookPath={site.stripe_webhook_path}
+          secretEnvKey={site.stripe_secret_env_key}
           onToggle={() => transition('stripe', !site.stripe_running, () => toggleStripe(site))}
-          onSaveConfig={(path) => setStripeConfig(site, path)}
+          onSaveConfig={(path, key) => setStripeConfig(site, path, key)}
           onLogs={logsFor('stripe')}
         />
       {/if}

@@ -2,7 +2,7 @@
   import { runTinker, fetchTinkerSnippets, saveTinkerSnippet, deleteTinkerSnippet, activeWorktreeDomain, type TinkerResponse, type TinkerSnippet, type Site } from '$stores/sites';
   import { modal, openErrorModal } from '$stores/modals';
   import { parseDump, looksLikeDump } from '$lib/dump-parser';
-  import { parseBlock } from '$lib/tinker';
+  import { parseBlock, fontSize, FONT_MIN, FONT_MAX } from '$lib/tinker';
   import DumpView from '$components/DumpView.svelte';
   import Popover from '$components/Popover.svelte';
   import ConfirmModal from '$components/ConfirmModal.svelte';
@@ -48,6 +48,10 @@
     return localStorage.getItem(SPLIT_KEY) === SplitDir.Vertical ? SplitDir.Vertical : SplitDir.Horizontal;
   }
   let splitDir = $state<SplitDir>(loadSplitDir());
+  // Text size is global like the split, and drives the editor and the result
+  // pane together so the two halves always read at the same size.
+  const FONT_KEY = 'tinker:fontSize';
+  let textSize = $state(fontSize(typeof localStorage === 'undefined' ? null : localStorage.getItem(FONT_KEY)));
   let fullscreen = $state(false);
   let fullscreenBtn: HTMLButtonElement | undefined;
   let editor: Monaco.editor.IStandaloneCodeEditor | null = null;
@@ -124,6 +128,13 @@
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(SPLIT_KEY, splitDir);
     }
+  });
+
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(FONT_KEY, String(textSize));
+    }
+    editor?.updateOptions({ fontSize: textSize });
   });
 
   // Escape belongs to the topmost layer: a modal stacked on the tab owns it
@@ -256,6 +267,7 @@
   // closure reads the current `code` state on each invocation.
   function onEditorReady({ editor: e, monaco }: { editor: Monaco.editor.IStandaloneCodeEditor; monaco: MonacoModule }) {
     editor = e;
+    e.updateOptions({ fontSize: textSize });
     // Intercept at the keydown level rather than via addCommand: Ctrl/Cmd+Enter
     // must run even while the suggestion widget is open (which otherwise
     // captures Enter to accept the highlighted completion).
@@ -313,6 +325,29 @@
       {/if}
     </div>
     <div class="flex items-center gap-3">
+      <Popover label={m.tinker_textSize()} align="right" width={168}>
+        {#snippet triggerButton(toggle)}
+          <button
+            type="button"
+            onclick={toggle}
+            class="block text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+            use:tooltip={m.tinker_textSize()}
+            aria-label={m.tinker_textSize()}
+          >
+            <Icon name="system" class="w-4 h-4" />
+          </button>
+        {/snippet}
+        {#snippet children()}
+          <div class="flex items-center justify-between gap-3 px-3 py-2" data-testid="text-size">
+            <span class="text-xs text-gray-600 dark:text-gray-300">{m.tinker_textSize()}</span>
+            <div class="flex items-center rounded-full border border-gray-200 dark:border-lerd-border text-xs font-mono">
+              <button type="button" class="px-2 py-0.5 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 disabled:opacity-40 disabled:hover:text-gray-500 transition-colors" disabled={textSize <= FONT_MIN} onclick={() => textSize--} aria-label={m.tinker_textSmaller()}>−</button>
+              <span class="w-6 text-center tabular-nums text-gray-700 dark:text-gray-200">{textSize}</span>
+              <button type="button" class="px-2 py-0.5 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 disabled:opacity-40 disabled:hover:text-gray-500 transition-colors" disabled={textSize >= FONT_MAX} onclick={() => textSize++} aria-label={m.tinker_textLarger()}>+</button>
+            </div>
+          </div>
+        {/snippet}
+      </Popover>
       <Popover
         label={m.tinker_snippets()}
         align="right"
@@ -426,7 +461,7 @@
     data-splitdir={splitDir}
   >
     <div
-      class="group flex-1 min-h-40 md:min-h-0 flex flex-col rounded-lg border border-gray-200 dark:border-lerd-border overflow-hidden bg-gray-50 dark:bg-black/40 relative"
+      class="group flex-1 min-h-40 md:min-h-0 flex flex-col rounded-lg border border-gray-200 dark:border-lerd-border overflow-hidden bg-gray-50 dark:bg-lerd-card relative"
     >
       <div class="flex-1 min-h-0 overflow-hidden">
         <MonacoEditor bind:value={code} language="php" onReady={onEditorReady} />
@@ -441,7 +476,8 @@
     </div>
 
     <div
-      class="flex-1 min-h-30 md:min-h-0 flex flex-col overflow-y-auto rounded-lg border border-gray-200 dark:border-lerd-border bg-gray-50 dark:bg-black/40 tinker-output py-2"
+      class="flex-1 min-h-30 md:min-h-0 flex flex-col overflow-y-auto rounded-lg border border-gray-200 dark:border-lerd-border bg-gray-50 dark:bg-lerd-card tinker-output py-2"
+      style="font-size: {textSize}px"
     >
       {#if !result && running}
         <p class="text-xs text-gray-400">{m.tinker_running()}</p>
@@ -473,7 +509,7 @@
               {:else if block.kind === 'query'}
                 <div class="flex items-start gap-2 rounded-md border-l-2 border-sky-400 dark:border-sky-500 border-y border-r border-y-sky-200/60 border-r-sky-200/60 dark:border-y-sky-800/40 dark:border-r-sky-800/40 bg-sky-50/80 dark:bg-sky-950/30 px-2 py-1">
                   <Icon name="database" class="w-4 h-4 mt-0.5 text-sky-500 dark:text-sky-400 shrink-0" />
-                  <pre class="whitespace-pre-wrap text-[11px] leading-relaxed text-sky-800 dark:text-sky-300">{block.sql}</pre>
+                  <pre class="whitespace-pre-wrap text-[0.92em] leading-relaxed text-sky-800 dark:text-sky-300">{block.sql}</pre>
                 </div>
               {:else}
                 <pre class="whitespace-pre-wrap">{block.text}</pre>

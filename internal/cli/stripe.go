@@ -193,21 +193,7 @@ func writeStripeUnit(siteName, apiKey, forwardTo string) error {
 // a caller that reloads once for a batch. Reports whether the file changed.
 func writeStripeUnitFile(siteName, apiKey, forwardTo string) (bool, error) {
 	unitName := "lerd-stripe-" + siteName
-	containerName := unitName
-
-	unit := fmt.Sprintf(`[Unit]
-Description=Lerd Stripe Listener (%s)
-After=network.target
-
-[Service]
-Type=simple
-Restart=on-failure
-RestartSec=5
-ExecStart=%s
-
-[Install]
-WantedBy=default.target
-`, siteName, podman.StripeListenExecStart(containerName, apiKey, forwardTo))
+	unit := podman.StripeListenUnit(siteName, apiKey, forwardTo)
 
 	changed, err := services.Mgr.WriteServiceUnitIfChanged(unitName, unit)
 	if err != nil {

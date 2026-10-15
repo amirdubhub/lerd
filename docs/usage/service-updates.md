@@ -14,6 +14,8 @@ Default services declare their policy in their preset YAML. The most common comb
 
 Click the green **Update → \<tag\>** button in the dashboard, run `lerd service update <name>`, or call MCP `service_control(action: "update", name)`. Lerd queries the registry for the newest tag matching the preset's `update_strategy`, applies the same digest comparison the rolling-tag flow uses (suppresses no-op updates), pulls, persists the chosen image, and restarts the unit. The previous image is recorded so a rollback button appears next to the version label.
 
+To apply every pending safe update at once, use **Update all** on the services dashboard or run `lerd service update --all`. Each outdated service is updated in turn, and a failure is reported without stopping the others. Cross-strategy upgrades and migrations are never part of it.
+
 For services on rolling tags (`mailpit:latest`, `rustfs:latest`), Update only fires when the local manifest digest differs from the registry's, re-pulling the same `:latest` digest doesn't surface a phantom badge.
 
 ## Upgrade, same-major across minor lines
@@ -112,6 +114,7 @@ allow_major_upgrade: false      # NewestStable stays in current major when false
 lerd service list                            # Update column shows badges
 lerd service update <name>                   # safe in-strategy patch
 lerd service update <name> <tag>             # explicit upgrade target
+lerd service update --all                    # safe update for every outdated service
 lerd service migrate <name> <version>        # SQL dump + restore
 lerd service rollback <name>                 # toggle back to previous image
 ```

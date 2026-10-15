@@ -406,11 +406,11 @@ function phaseLabel(phase: string): string {
 export async function streamServiceAction(
   name: string,
   action: UpdateAction,
-  opts: { tag?: string; resetData?: boolean } = {}
+  opts: { tag?: string; resetData?: boolean; confirmed?: boolean } = {}
 ): Promise<{ ok: boolean; error?: string }> {
   // Every service action that can pull goes through here, so one confirmation
   // covers update, migrate, rollback and reinstall.
-  if (!(await confirmDownload(serviceLabel(name), { service: name, action, tag: opts.tag || '' }))) {
+  if (!opts.confirmed && !(await confirmDownload(serviceLabel(name), { service: name, action, tag: opts.tag || '' }))) {
     return { ok: false };
   }
 
@@ -507,6 +507,28 @@ export async function streamServiceAction(
     setProgress(name, null);
     return { ok: false, error: e instanceof Error ? e.message : 'request failed' };
   }
+}
+
+export interface ServiceUpdateResult {
+  name: string;
+  ok: boolean;
+  error?: string;
+}
+
+// updateServices applies the safe update to each service one at a time, since
+// parallel pulls fight over bandwidth. The caller has already confirmed the batch.
+export async function updateServices(
+  names: string[],
+  onresult?: (result: ServiceUpdateResult) => void
+): Promise<ServiceUpdateResult[]> {
+  const results: ServiceUpdateResult[] = [];
+  for (const name of names) {
+    const { ok, error } = await streamServiceAction(name, 'update', { confirmed: true });
+    const result = ok ? { name, ok } : { name, ok, error };
+    results.push(result);
+    onresult?.(result);
+  }
+  return results;
 }
 
 export interface ServiceConfig {

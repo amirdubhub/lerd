@@ -11,6 +11,7 @@
 | `lerd service list` | All services with status, version, and an Update column |
 | `lerd service search [query]` | Browse every service preset, bundled and store alike; install a hit with `lerd service preset <name>` |
 | `lerd service update <name> [tag]` | Pull a newer image and restart; tag selects an explicit upgrade target |
+| `lerd service update --all` | Apply the safe update to every installed service that has one, one at a time, reporting each failure without stopping the rest |
 | `lerd service migrate <name> <version>` | SQL dump + restore for cross-version moves (mysql, mariadb, postgres); `<version>` is a preset version label such as `18` |
 | `lerd service rollback <name>` | Swap back to the previously-running image (toggles) |
 | `lerd service pin <name>` | Pin a service so it is never auto-stopped |

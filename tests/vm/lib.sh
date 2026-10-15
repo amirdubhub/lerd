@@ -98,6 +98,10 @@ wait_for() {
 # reloads_since <time> [unit]: daemon-reloads the user manager logged since
 # then, only those a process of that unit asked for when one is given. A site's
 # workers or services going down or up together should cost one.
+# journal_now: a journalctl --since stamp to the millisecond; a whole-second one
+# reaches back over an event the step just before logged in the same second.
+journal_now() { date '+%F %T.%N' | cut -c1-23; }
+
 reloads_since() { journalctl --user --since "$1" --no-pager -o cat 2>/dev/null | grep '^Reload requested' | grep -c "${2:-}"; }
 
 # tld: the suffix sites are served under right now, test or localhost.
@@ -151,7 +155,9 @@ need_demo() {
 	[ -d "$DEMO_DIR" ] && return
 	echo "--- setup: creating demo"
 	mkdir -p "$PROJECTS"
-	(cd "$PROJECTS" && lerd new demo && cd "$DEMO_DIR" && lerd setup --all --skip-open && lerd secure "$(site_name "$DEMO_DIR")") </dev/null >/dev/null 2>&1 || {
+	# A git repo with a commit, as phase 2 leaves it; worktrees and clones need one.
+	(cd "$PROJECTS" && lerd new demo && cd "$DEMO_DIR" && lerd setup --all --skip-open && lerd secure "$(site_name "$DEMO_DIR")" &&
+		{ git rev-parse --git-dir >/dev/null 2>&1 || git init -q; } && git add -A && git -c user.email=t@t -c user.name=t commit -qm demo) </dev/null >/dev/null 2>&1 || {
 		_fail "setup: create demo"
 		exit 1
 	}

@@ -84,6 +84,53 @@ button {
   }
 }
 
+/* List hidden: the header makes room for the restore button, and the body takes
+   the list frame's border, drawn over it since some pages paint their own
+   background, with the curved corner placed under the header. */
+.list-hidden::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 1px;
+  z-index: 5;
+  pointer-events: none;
+  background: var(--color-lerd-headerborder);
+}
+.list-hidden .page-header {
+  position: relative;
+  z-index: 6;
+  padding-left: 2.75rem;
+}
+/* Some headers pad an inner row instead of themselves; drop that so the gap
+   after the button matches the one before it. */
+.list-hidden .page-header > :first-child {
+  padding-left: 0;
+}
+.list-hidden .page-header::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 0.75rem;
+  height: 0.75rem;
+  z-index: 10;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent calc(0.75rem - 1px),
+    var(--color-lerd-headerborder) calc(0.75rem - 1px) 0.75rem,
+    var(--color-lerd-header-light) 0.75rem
+  );
+}
+.dark .list-hidden .page-header::after {
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent calc(0.75rem - 1px),
+    var(--color-lerd-headerborder) calc(0.75rem - 1px) 0.75rem,
+    var(--color-lerd-header) 0.75rem
+  );
+}
+
 /* The scrollbar keeps its room but only shows its thumb while the area is
    hovered. The standard properties, unlike ::-webkit-scrollbar, repaint on an
    ancestor's :hover, and they give the bar the same width in both states. */

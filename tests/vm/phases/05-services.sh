@@ -135,6 +135,8 @@ lerd service add --name vmghost --image docker.io/library/nginx:alpine </dev/nul
 lerd service start vmghost </dev/null >/dev/null 2>&1
 wait_for 30 bash -c 'podman ps --format "{{.Names}}" | grep -qx lerd-vmghost'
 rm -f "$HOME/.config/lerd/services/vmghost.yaml"
+# The stats endpoint samples on an interval, so a container just started shows on the next sample.
+wait_for 20 bash -c "curl -s http://127.0.0.1:7073/api/stats | grep -q '\"lerd-vmghost\"'"
 check_out "an orphaned service container shows and its trash action removes it" 'orphan=true.*gone' bash -c "curl -s http://127.0.0.1:7073/api/stats | grep -q '\"lerd-vmghost\"[^}]*\"orphaned\":true' && echo orphan=true; curl -s -X POST -H 'X-Lerd-CSRF: 1' http://127.0.0.1:7073/api/services/vmghost/remove >/dev/null; test -e ~/.config/containers/systemd/lerd-vmghost.container || echo gone"
 lerd service start mailpit </dev/null >/dev/null 2>&1
 
@@ -212,6 +214,9 @@ check_out "5.37 db:extension lists and adds one" 'pg_trgm' bash -c "lerd db:exte
 mkdir -p "$HOME/.local/share/lerd/data/minio/vmbucket" && echo vm >"$HOME/.local/share/lerd/data/minio/vmbucket/vm.txt"
 check_out "5.38 lerd minio:migrate moves a MinIO volume onto RustFS" 'vm.txt' bash -c 'lerd minio:migrate >/dev/null 2>&1; ls ~/.local/share/lerd/data/rustfs/vmbucket/'
 
+# A rerun finds the image from the last pass, and then there is no pull to announce.
+lerd service remove memcached </dev/null >/dev/null 2>&1
+podman images --format '{{.Repository}}:{{.Tag}}' | grep /memcached: | xargs -r podman rmi -f >/dev/null 2>&1
 lerd service preset memcached </dev/null >/dev/null 2>&1
 # The pull, and its notice, come with the first start.
 out=$(lerd service start memcached </dev/null 2>&1)

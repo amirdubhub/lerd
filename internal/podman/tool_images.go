@@ -16,7 +16,7 @@ const (
 // StripeCLIImage is the image a site's stripe listener worker runs. Pinned,
 // because an older image cached as :latest rejects the --all-snapshot flag
 // that stripe-cli 1.51 made mandatory.
-const StripeCLIImage = "docker.io/stripe/stripe-cli:v1.52.1"
+const StripeCLIImage = "docker.io/stripe/stripe-cli:v1.53.1"
 
 // StripeListenExecStart is the ExecStart of a site's stripe listener unit.
 // --all-snapshot forwards every classic webhook event, which is what listen
@@ -29,4 +29,25 @@ func StripeListenExecStart(containerName, apiKey, forwardTo string) string {
 // ToolImages lists every image lerd runs as a throw-away container.
 func ToolImages() []string {
 	return []string{ProbeImage}
+}
+
+// StripeListenUnit is a site's stripe listener service unit. ExecStopPost
+// removes the container, because a stop that lands before it starts leaves it
+// in Created, where --rm never fires.
+func StripeListenUnit(siteName, apiKey, forwardTo string) string {
+	containerName := "lerd-stripe-" + siteName
+	return fmt.Sprintf(`[Unit]
+Description=Lerd Stripe Listener (%s)
+After=network.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+ExecStart=%s
+ExecStopPost=-%s rm -f --ignore %s
+
+[Install]
+WantedBy=default.target
+`, siteName, StripeListenExecStart(containerName, apiKey, forwardTo), PodmanBin(), containerName)
 }

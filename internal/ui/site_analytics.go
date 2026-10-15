@@ -84,9 +84,9 @@ type analyticsResponse struct {
 	Excluded []string `json:"excluded"`
 }
 
-// keepSlowestEvery is how often the kept set follows the stats. A slowest
-// request evicted before its first refresh is lost, and a busy site turns the
-// buffer over in seconds, so it stays short.
+// keepSlowestEvery is how often the kept set follows the stats. The debug
+// buffer spares new events for two of these, so a refresh always sees a
+// request before it can be trimmed.
 const keepSlowestEvery = 15 * time.Second
 
 // keepSlowestRequests keeps every request that is, or can still become, a

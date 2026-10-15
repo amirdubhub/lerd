@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,5 +126,50 @@ func writeTar(t *testing.T, tw *tar.Writer, name string, data []byte) {
 	}
 	if _, err := tw.Write(data); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCommand_PointsConfigHomeAtFullSemanticTokens(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+
+	cmd, err := Command(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Dir != dir {
+		t.Fatalf("Dir = %q, want %q", cmd.Dir, dir)
+	}
+	var home string
+	for _, kv := range cmd.Env {
+		if v, ok := strings.CutPrefix(kv, "XDG_CONFIG_HOME="); ok {
+			home = v
+		}
+	}
+	if home == "" {
+		t.Fatal("XDG_CONFIG_HOME not set on the command")
+	}
+	b, err := os.ReadFile(filepath.Join(home, "phpantom_lsp", ".phpantom.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "[semantic_tokens]\nmode = \"full\"") {
+		t.Fatalf("config does not ask for full semantic tokens:\n%s", b)
+	}
+}
+
+func TestCommand_LeavesNoTempFiles(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	for range 2 {
+		if _, err := Command(context.Background(), t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lerd", "phpantom", "phpantom_lsp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != ".phpantom.toml" {
+		t.Fatalf("config dir holds %v, want only .phpantom.toml", entries)
 	}
 }

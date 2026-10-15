@@ -11,8 +11,17 @@ export const phpVersions = writable<string[]>([]);
 export const phpVersionsLoaded = writable(false);
 
 // Shown wherever a prerelease version is offered, so it never reads as an
-// ordinary choice. Short enough to sit inside the version card.
-export const PRERELEASE_LABEL = 'beta';
+// ordinary choice. Short enough to sit inside the version card. Generic, since
+// the stage is only known once a build exists to read it from.
+export const PRERELEASE_LABEL = 'preview';
+
+// prereleaseStage reads the stage from a probed build ("8.6.0RC1" → "RC"), which
+// moves through alpha, beta and RC upstream without a lerd release.
+export function prereleaseStage(build: string): string {
+  const stage = /(alpha|beta|RC)\d*$/i.exec(build)?.[1];
+  if (!stage) return PRERELEASE_LABEL;
+  return stage.toLowerCase() === 'rc' ? 'RC' : stage.toLowerCase();
+}
 
 export interface PhpOption {
   value: string;

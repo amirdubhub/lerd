@@ -46,8 +46,10 @@ check "stop and start" bash -c 'lerd stop && lerd start'
 expect_200 "$(wt_url "$x")"
 expect_200 "7.13 [partial]" "$(wt_url "$y")"
 
+# Only the remove's own window: the stop/start above restarts the queue by design.
+t=$(journal_now)
 check "lerd worktree remove the bare one" lerd worktree remove "$(wt "$y")"
-check_out "7.14 [partial] units stop before git and nothing restart-loops" '^0$' bash -c "journalctl --user --since '-3min' -u 'lerd-*' | grep -c 'Scheduled restart' || true"
+check_out "7.14 [partial] units stop before git and nothing restart-loops" '^0$' bash -c "sleep 10; journalctl --user --since '$t' -u 'lerd-*' | grep -c 'Scheduled restart' || true"
 
 check "an isolated worktree: add" lerd worktree add -b "$i"
 lerd worktree wait "$(wt "$i")" --timeout 10m </dev/null >/dev/null 2>&1

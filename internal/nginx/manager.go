@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -206,6 +208,9 @@ type VhostData struct {
 	// placeholder-expanded and indented. Rendered ahead of the generic
 	// locations so a framework can claim paths they would otherwise swallow.
 	FrameworkNginx string
+	// FrameworkFastCGI is the framework definition's fastcgi_param lines,
+	// already expanded and indented for the PHP location.
+	FrameworkFastCGI string
 	// FrontController narrows the php location to index.php and rewrites every
 	// other .php URL onto it. Resolved by resolveFrontController.
 	FrontController bool
@@ -233,15 +238,16 @@ func (d VhostData) Root() string {
 // indented for splicing into the server block. Empty when the framework declares
 // none, when the snippet is unbalanced, or when a substituted value carries
 // nginx syntax of its own.
-func resolveFrameworkNginx(site config.Site, publicDir, fpmContainer string) string {
+func resolveFrameworkNginx(site config.Site, publicDir, fpmContainer string) (block, fastcgi string) {
 	fw, ok := config.GetFrameworkForDir(site.Framework, site.Path)
 	if !ok || fw.Nginx == nil {
-		return ""
+		return "", ""
 	}
 	var warn bytes.Buffer
-	block := frameworkNginxBlock(&warn, site.Framework, site.PrimaryDomain(), fw.Nginx.Snippet, site.Path, publicDir, fpmContainer)
+	block = frameworkNginxBlock(&warn, site.Framework, site.PrimaryDomain(), fw.Nginx.Snippet, site.Path, publicDir, fpmContainer)
+	fastcgi = frameworkFastCGIParams(&warn, site.Framework, site.PrimaryDomain(), fw.Nginx.FastCGIParams, site.Path, publicDir)
 	emitOnce(os.Stdout, warn.String())
-	return block
+	return block, fastcgi
 }
 
 var (
@@ -282,6 +288,37 @@ func frameworkNginxBlock(w io.Writer, framework, domain, snippet, sitePath, publ
 		return ""
 	}
 	return indentBlock(strings.TrimRight(expanded, "\n"), "    ")
+}
+
+var fastcgiParamName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// frameworkFastCGIParams renders a framework's fastcgi params as indented
+// fastcgi_param lines, sorted by name. An entry that could break out of its
+// directive is dropped with a warning to w, like a bad snippet.
+func frameworkFastCGIParams(w io.Writer, framework, domain string, params map[string]string, sitePath, publicDir string) string {
+	docRoot := sitePath
+	if publicDir != "" && publicDir != "." {
+		docRoot = filepath.Join(sitePath, publicDir)
+	}
+	var out strings.Builder
+	for _, name := range slices.Sorted(maps.Keys(params)) {
+		value := strings.NewReplacer("{{root}}", sitePath, "{{public}}", docRoot).Replace(params[name])
+		switch {
+		case !fastcgiParamName.MatchString(name):
+			fmt.Fprintf(w, "[WARN] dropping %s fastcgi param %q for %s: not a valid name\n", framework, name, domain)
+		case strings.Contains(value, "{{"):
+			fmt.Fprintf(w, "[WARN] dropping %s fastcgi param %s for %s: unknown {{placeholder}}\n", framework, name, domain)
+		case strings.ContainsAny(value, nginxValueForbidden):
+			fmt.Fprintf(w, "[WARN] dropping %s fastcgi param %s for %s: value would end the directive\n", framework, name, domain)
+		// nginx reads $ as a variable even inside quotes: an unknown one fails the
+		// config for every site, a known one changes what PHP receives.
+		case strings.Contains(value, "$"):
+			fmt.Fprintf(w, "[WARN] dropping %s fastcgi param %s for %s: value contains $, which nginx would read as a variable\n", framework, name, domain)
+		default:
+			fmt.Fprintf(&out, "        fastcgi_param %s %s;\n", name, nginxQuote(value))
+		}
+	}
+	return out.String()
 }
 
 // nginxValueForbidden are the characters that let a substituted value break out
@@ -565,24 +602,26 @@ func renderFPMVhost(site config.Site, phpVersion string, ssl bool) ([]byte, erro
 	proxies := detectSiteProxies(site)
 	devBase, devPort := detectSiteDevServer(site)
 	fpmContainer, fpmPort := fpmUpstream(&site, phpVersion)
+	frameworkNginx, frameworkFastCGI := resolveFrameworkNginx(site, publicDir, fpmContainer)
 	data := VhostData{
-		Domain:          site.PrimaryDomain(),
-		ServerNames:     serverNamesWithWildcards(site.Domains),
-		Path:            site.Path,
-		PHPVersion:      phpVersion,
-		PHPVersionShort: phpShort(phpVersion),
-		FPMContainer:    fpmContainer,
-		FPMPort:         fpmPort,
-		PublicDir:       publicDir,
-		Proxies:         proxies,
-		UpstreamHost:    hostProxyUpstream(),
-		DevServerBase:   devBase,
-		DevServerPort:   devPort,
-		LerdSite:        site.Name,
-		Profiling:       profilerEnabled(),
-		RequestTimeout:  resolveRequestTimeout(site.Path, phpVersion),
-		FrameworkNginx:  resolveFrameworkNginx(site, publicDir, fpmContainer),
-		FrontController: resolveFrontController(site),
+		Domain:           site.PrimaryDomain(),
+		ServerNames:      serverNamesWithWildcards(site.Domains),
+		Path:             site.Path,
+		PHPVersion:       phpVersion,
+		PHPVersionShort:  phpShort(phpVersion),
+		FPMContainer:     fpmContainer,
+		FPMPort:          fpmPort,
+		PublicDir:        publicDir,
+		Proxies:          proxies,
+		UpstreamHost:     hostProxyUpstream(),
+		DevServerBase:    devBase,
+		DevServerPort:    devPort,
+		LerdSite:         site.Name,
+		Profiling:        profilerEnabled(),
+		RequestTimeout:   resolveRequestTimeout(site.Path, phpVersion),
+		FrameworkNginx:   frameworkNginx,
+		FrameworkFastCGI: frameworkFastCGI,
+		FrontController:  resolveFrontController(site),
 	}
 	data.BrowserLogsConf = browserLogsConf(site.Name, "")
 	if ssl {
@@ -803,12 +842,13 @@ func worktreeSite(domain, path, siteName string) config.Site {
 }
 
 // worktreeVhostConfig resolves the framework-dependent parts of a worktree
-// vhost, the same three the main-site generators resolve for the parent.
-func worktreeVhostConfig(domain, path, phpVersion, siteName string) (publicDir, fpmContainer, frameworkNginx string, fpmPort int) {
+// vhost, the same parts the main-site generators resolve for the parent.
+func worktreeVhostConfig(domain, path, phpVersion, siteName string) (publicDir, fpmContainer, frameworkNginx, frameworkFastCGI string, fpmPort int) {
 	site := worktreeSite(domain, path, siteName)
 	publicDir = resolvePublicDir(site)
 	fpmContainer, fpmPort = fpmUpstream(&site, phpVersion)
-	return publicDir, fpmContainer, resolveFrameworkNginx(site, publicDir, fpmContainer), fpmPort
+	frameworkNginx, frameworkFastCGI = resolveFrameworkNginx(site, publicDir, fpmContainer)
+	return publicDir, fpmContainer, frameworkNginx, frameworkFastCGI, fpmPort
 }
 
 // GenerateWorktreeVhost renders the HTTP vhost template for a worktree checkout
@@ -824,26 +864,27 @@ func GenerateWorktreeVhost(domain, path, phpVersion, siteName, branch string) er
 		return err
 	}
 
-	publicDir, fpmContainer, frameworkNginx, fpmPort := worktreeVhostConfig(domain, path, phpVersion, siteName)
+	publicDir, fpmContainer, frameworkNginx, frameworkFastCGI, fpmPort := worktreeVhostConfig(domain, path, phpVersion, siteName)
 	devBase, devPort := detectWorktreeDevServer(siteName, path)
 	data := VhostData{
-		Domain:          domain,
-		ServerNames:     domain + " *." + domain,
-		Path:            path,
-		PHPVersion:      phpVersion,
-		PHPVersionShort: phpShort(phpVersion),
-		FPMContainer:    fpmContainer,
-		FPMPort:         fpmPort,
-		PublicDir:       publicDir,
-		LerdSite:        siteName,
-		LerdBranch:      branch,
-		UpstreamHost:    hostProxyUpstream(),
-		DevServerBase:   devBase,
-		DevServerPort:   devPort,
-		Profiling:       profilerEnabled(),
-		RequestTimeout:  resolveRequestTimeout(path, phpVersion),
-		FrameworkNginx:  frameworkNginx,
-		FrontController: resolveFrontController(worktreeSite(domain, path, siteName)),
+		Domain:           domain,
+		ServerNames:      domain + " *." + domain,
+		Path:             path,
+		PHPVersion:       phpVersion,
+		PHPVersionShort:  phpShort(phpVersion),
+		FPMContainer:     fpmContainer,
+		FPMPort:          fpmPort,
+		PublicDir:        publicDir,
+		LerdSite:         siteName,
+		LerdBranch:       branch,
+		UpstreamHost:     hostProxyUpstream(),
+		DevServerBase:    devBase,
+		DevServerPort:    devPort,
+		Profiling:        profilerEnabled(),
+		RequestTimeout:   resolveRequestTimeout(path, phpVersion),
+		FrameworkNginx:   frameworkNginx,
+		FrameworkFastCGI: frameworkFastCGI,
+		FrontController:  resolveFrontController(worktreeSite(domain, path, siteName)),
 	}
 	data.BrowserLogsConf = browserLogsConf(siteName, branch)
 
@@ -873,27 +914,28 @@ func GenerateWorktreeSSLVhost(domain, path, phpVersion, parentDomain, siteName, 
 		return err
 	}
 
-	publicDir, fpmContainer, frameworkNginx, fpmPort := worktreeVhostConfig(domain, path, phpVersion, siteName)
+	publicDir, fpmContainer, frameworkNginx, frameworkFastCGI, fpmPort := worktreeVhostConfig(domain, path, phpVersion, siteName)
 	devBase, devPort := detectWorktreeDevServer(siteName, path)
 	data := VhostData{
-		Domain:          domain,
-		ServerNames:     domain + " *." + domain,
-		Path:            path,
-		PHPVersion:      phpVersion,
-		PHPVersionShort: phpShort(phpVersion),
-		FPMContainer:    fpmContainer,
-		FPMPort:         fpmPort,
-		CertDomain:      parentDomain,
-		PublicDir:       publicDir,
-		LerdSite:        siteName,
-		LerdBranch:      branch,
-		UpstreamHost:    hostProxyUpstream(),
-		DevServerBase:   devBase,
-		DevServerPort:   devPort,
-		Profiling:       profilerEnabled(),
-		RequestTimeout:  resolveRequestTimeout(path, phpVersion),
-		FrameworkNginx:  frameworkNginx,
-		FrontController: resolveFrontController(worktreeSite(domain, path, siteName)),
+		Domain:           domain,
+		ServerNames:      domain + " *." + domain,
+		Path:             path,
+		PHPVersion:       phpVersion,
+		PHPVersionShort:  phpShort(phpVersion),
+		FPMContainer:     fpmContainer,
+		FPMPort:          fpmPort,
+		CertDomain:       parentDomain,
+		PublicDir:        publicDir,
+		LerdSite:         siteName,
+		LerdBranch:       branch,
+		UpstreamHost:     hostProxyUpstream(),
+		DevServerBase:    devBase,
+		DevServerPort:    devPort,
+		Profiling:        profilerEnabled(),
+		RequestTimeout:   resolveRequestTimeout(path, phpVersion),
+		FrameworkNginx:   frameworkNginx,
+		FrameworkFastCGI: frameworkFastCGI,
+		FrontController:  resolveFrontController(worktreeSite(domain, path, siteName)),
 	}
 	data.BrowserLogsConf = browserLogsConf(siteName, branch)
 

@@ -220,7 +220,7 @@ Switch the PHP runtime for the current site between shared PHP-FPM and per-site 
 | `lerd runtime frankenphp --worker` | Enable FrankenPHP with worker mode (Laravel Octane or Symfony's FrankenPHP adapter with `--watch`) |
 | `lerd runtime frankenphp --no-worker` | Switch to FrankenPHP and explicitly disable worker mode |
 | `lerd runtime fpm` | Back to shared PHP-FPM; clears the runtime field from `.lerd.yaml` |
-| `lerd octane:reload [on\|off]` | Toggle Octane auto-reload on file changes (`octane:start --watch`) for the current FrankenPHP worker-mode site; with no argument prints the current state. Needs the `chokidar` npm package |
+| `lerd octane:reload [on\|off]` | Toggle Octane auto-reload on file changes (`octane:frankenphp --watch`) for the current FrankenPHP worker-mode site; with no argument prints the current state. Needs the `chokidar` npm package |
 
 ## Node
 
@@ -245,6 +245,7 @@ Switch the PHP runtime for the current site between shared PHP-FPM and per-site 
 | `lerd service status <name>` | Show systemd unit status |
 | `lerd service list` | All services with status, version, and an Update column showing pending updates |
 | `lerd service update <name> [tag]` | Pull a newer image and restart; with no tag applies the safe in-strategy update, with a tag targets an explicit upgrade |
+| `lerd service update --all` | Apply the safe update to every installed service that has one, one at a time, reporting each failure without stopping the rest |
 | `lerd service migrate <name> <target-tag>` | SQL dump + restore for cross-version mysql / postgres moves; old data dir and dump preserved under `~/.local/share/lerd/backups` |
 | `lerd service rollback <name>` | Swap back to the previously-running image; toggles, so a second rollback redoes the update |
 | `lerd service expose <name> <host:container>` | Publish an extra port on any bundled preset service (persisted, auto-restarts if running) |

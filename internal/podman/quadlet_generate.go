@@ -139,6 +139,9 @@ func GenerateCustomQuadlet(svc *config.CustomService) string {
 
 	b.WriteString("\n[Service]\n")
 	b.WriteString("Restart=always\n")
+	// A main process with no SIGTERM handler (meilisearch) dies with 143 on
+	// every stop, which would leave the unit, and lerd's status, "failed".
+	b.WriteString("SuccessExitStatus=143\n")
 	// Outlast the container's own grace. Without this the unit inherits
 	// DefaultTimeoutStopSec, which Arch-family distributions ship at 10s, so
 	// systemd SIGKILLs the stop before podman has spent the window the service

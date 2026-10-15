@@ -953,6 +953,9 @@ func TestEnrichStripe(t *testing.T) {
 		if !e.StripeSecretSet {
 			t.Error("expected StripeSecretSet = true for STRIPE_SECRET_KEY")
 		}
+		if e.StripeSecretEnvKey != "STRIPE_SECRET_KEY" {
+			t.Errorf("StripeSecretEnvKey = %q, want STRIPE_SECRET_KEY", e.StripeSecretEnvKey)
+		}
 	})
 }
 

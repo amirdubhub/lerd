@@ -14,7 +14,7 @@ Lerd resolves framework definitions from multiple sources. Higher priority wins:
 | 4 | Store-installed | `~/.local/share/lerd/frameworks/<name>@<version>.yaml` | Community definitions (auto-fetched) |
 | 5 | Built-in | Compiled into lerd binary | Laravel fallback only |
 
-Workers from the user overlay and project `.lerd.yaml` are merged on top of store or built-in definitions. An overlay with no `detect:` block leaves detection to the store or built-in definition of the same name, so one that only adds workers never stops a project from being recognised. See [Framework workers](framework-workers.md) for the worker lifecycle and how custom workers are added and managed.
+Workers from the user overlay and project `.lerd.yaml` are merged on top of store or built-in definitions. A user overlay's `logs:`, `nginx:` and `requires:` replace the base definition's when set, and its `setup:` steps run after the base's. An overlay with no `detect:` block leaves detection to the store or built-in definition of the same name, so one that only adds workers never stops a project from being recognised. See [Framework workers](framework-workers.md) for the worker lifecycle and how custom workers are added and managed.
 
 `lerd install` seeds the store: it pulls the index early, so detection sees the whole published catalogue rather than only the frameworks compiled into the binary, then fetches every definition the index lists. A fresh machine therefore ends up with the same definitions an established one has, and resolves any of them offline, instead of collecting them one at a time as the projects that need each one turn up. The refresh keeps any definition you already have that the store has since stopped publishing, and the watcher refreshes the index every six hours. An install that cannot reach the store keeps working on the built-ins and seeds itself on the next run.
 
@@ -779,6 +779,16 @@ A git worktree of the site gets the same block, expanded against its own checkou
 The snippet must have balanced braces, since an unbalanced one would close the enclosing `server` block and start declaring its own. Balance alone is not enough, because a `}` followed by a `server {` still balances, so the values substituted into the placeholders are rejected too if they contain `{`, `}`, `;`, `#`, or a newline. A snippet failing either check is dropped and the site renders without it, rather than risking an nginx config that fails to load for every site.
 
 Snippets are only honoured from the framework store and from user-defined definitions: an embedded `framework_def` in a project's `.lerd.yaml` is untrusted input, so its `nginx` block is stripped, the same way its host workers and command-type doctor checks are.
+
+`nginx.fastcgi_params` passes server variables to PHP without taking over the PHP location. Each entry becomes a `fastcgi_param` in lerd's own `location ~ \.php$`, after the params lerd sets, so profiling, `LERD_SITE` and the forwarded headers all stay in place. Values take `{{root}}` and `{{public}}`, expanded to the site's path (a worktree's own path on a worktree vhost). Testbench uses it to tell the skeleton under `vendor/` where the package lives:
+
+```yaml
+nginx:
+  fastcgi_params:
+    TESTBENCH_WORKING_PATH: "{{root}}"
+```
+
+A name must be a plain identifier and a value must not contain `{`, `}`, `;`, `#`, `$` or a newline once expanded, since nginx would read a `$` as one of its own variables; an entry failing either is dropped with a warning and the others still render. Like the snippet, the params are stripped from an embedded `framework_def`. An older lerd ignores the key, so a definition that needs it simply behaves on that binary as it did before the key existed.
 
 An app whose router owns its `.php` URLs needs no snippet at all. `front_controller: true` makes `index.php` the only script nginx runs: a request for any other `.php` file is rewritten onto it, with the original URL still in `REQUEST_URI`, and `PATH_INFO` is split off for URLs like `/index.php/api/status`. GLPI 11 is the case it exists for, where `/front/central.php` is a route rather than a file on disk. It is plain routing rather than raw config, so unlike the snippet it is kept in an embedded `framework_def`, and a project can also set it on its own in `.lerd.yaml` (see [nginx overrides](nginx-overrides.md#a-single-front-controller)).
 

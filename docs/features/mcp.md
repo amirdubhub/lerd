@@ -49,7 +49,7 @@ Context / instructions files:
 
 All clients share a single canonical tool reference, so the guidance never drifts between assistants. When running globally, the server uses the **directory the assistant is opened in** as the site context: no further configuration is needed.
 
-> **Claude Code** is registered via its own `claude mcp add` CLI rather than by editing `~/.claude.json` directly, since that file holds all of Claude's user state.
+> **Claude Code** is registered via its own `claude mcp add` CLI rather than by editing `~/.claude.json` directly, since that file holds all of Claude's user state. If you run Claude Code under a separate profile with `CLAUDE_CONFIG_DIR` set, run `lerd mcp:enable-global` from a shell where it is set: the skill then goes to `$CLAUDE_CONFIG_DIR/skills/lerd/SKILL.md` and the registration to that profile. Repeat it once per profile.
 
 > **GitHub Copilot** uses VS Code's `servers` key (each entry typed `stdio`), which differs from the `mcpServers` key the other clients use. Its instructions file (`.github/copilot-instructions.md`) is project-scoped only.
 
@@ -178,6 +178,14 @@ The server also sends short instructions when a client connects, telling the ass
 | `workspace` | `list`, `create`, `rename`, `delete`, `assign`, `move` |
 
 The injected context files document each action's arguments and the key conventions in full.
+
+### Switching branches from an assistant
+
+A plain `git switch` or `git pull` moves the code but leaves the database on the old branch's schema. The server instructions tell an assistant to keep the two in step with the tools it already has: a `db snapshot` before the switch, a copy of the database through `worktree db_isolate` for worktrees sharing it whenever a migration or a restore is about to change it, then a `db restore` of the snapshot taken on the new branch when there is one, and in either case a composer install through `exec` when `composer.lock` changed, ahead of the new branch's migrations. Snapshots taken through MCP record the site and the branch checked out, so `db snapshots` shows which branch's schema each one holds. When only the old branch had some migrations, the database is ahead of the code; the assistant says so and offers the snapshot rather than rolling anything back on its own.
+
+### Checking a browser test
+
+The context files tell an assistant that drives a site in a browser (Playwright, Pest browser, a browser MCP) to check each run against lerd before calling it done. With [debug capture](dumps.md) on, every PHP response carries an `X-Lerd-Rid` header; the assistant passes that id to `request lenses` and treats any N+1, slow query or error it reports as unfinished work. The instructions also have the assistant turn on [browser logs](browser-logs.md) for the site before the run, which adds the page's JavaScript errors and failed fetches to the same request, and to read `browser_events` afterwards, since errors after a single-page navigation belong to a page view with no request id.
 
 ### Creating a worktree from an assistant
 

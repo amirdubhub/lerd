@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { phpOptionsForSite, PRERELEASE_LABEL } from './phpVersions';
+import { phpOptionsForSite, PRERELEASE_LABEL, prereleaseStage } from './phpVersions';
 
 describe('phpOptionsForSite', () => {
   const installed = ['7.4', '8.1', '8.3', '8.4', '8.5'];
@@ -141,5 +141,18 @@ describe('confirmPhpDownload', () => {
     const { confirmPhpDownload } = await import('./phpVersions');
     await confirmPhpDownload('8.4');
     expect(urls[0]).toContain('php=8.4');
+  });
+});
+
+describe('prereleaseStage', () => {
+  it('reads the stage from a prerelease build', () => {
+    expect(prereleaseStage('8.6.0alpha3')).toBe('alpha');
+    expect(prereleaseStage('8.6.0beta2')).toBe('beta');
+    expect(prereleaseStage('8.6.0RC1')).toBe('RC');
+  });
+
+  it('falls back to the generic mark when the build names no stage', () => {
+    expect(prereleaseStage('')).toBe(PRERELEASE_LABEL);
+    expect(prereleaseStage('8.6')).toBe(PRERELEASE_LABEL);
   });
 });

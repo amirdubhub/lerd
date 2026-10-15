@@ -34,3 +34,18 @@ func TestStripeListenExecStart_NamesItsEventsOnAPinnedImage(t *testing.T) {
 		t.Errorf("StripeCLIImage = %q: an older image cached as :latest rejects --all-snapshot", StripeCLIImage)
 	}
 }
+
+// A listener stopped before its container started leaves it in Created, where
+// --rm never fires and lerd uninstall, which removes units, leaves it behind.
+func TestStripeListenUnit_RemovesItsContainerOnStop(t *testing.T) {
+	got := StripeListenUnit("shop", "sk_test_x", "https://shop.test/stripe/webhook")
+	for _, want := range []string{
+		"Description=Lerd Stripe Listener (shop)\n",
+		"ExecStart=" + StripeListenExecStart("lerd-stripe-shop", "sk_test_x", "https://shop.test/stripe/webhook") + "\n",
+		"ExecStopPost=-" + PodmanBin() + " rm -f --ignore lerd-stripe-shop\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("unit = %q, want it to contain %q", got, want)
+		}
+	}
+}

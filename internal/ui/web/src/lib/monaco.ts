@@ -5,6 +5,7 @@
 // exactly once.
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import { configLanguages, phpFragmentLanguage } from '$lib/monaco-langs';
+import { editorSurfaces, keywordRule, semanticRules } from '$lib/editor-theme';
 
 // We deliberately load the bare editor API rather than the `monaco-editor`
 // barrel: the barrel registers every bundled language plus the ts/json/
@@ -62,12 +63,14 @@ function accent(): string {
 
 function defineThemes(monaco: MonacoModule) {
   const tint = accent();
+  const root = getComputedStyle(document.documentElement);
+  const surface = editorSurfaces((name) => root.getPropertyValue(name));
   monaco.editor.defineTheme('lerd-light', {
     base: 'vs',
     inherit: true,
-    rules: CONFIG_RULES_LIGHT,
+    rules: [...CONFIG_RULES_LIGHT, ...semanticRules(false), keywordRule(tint)],
     colors: {
-      'editor.background': '#f9fafb',
+      'editor.background': surface.light,
       'editorLineNumber.foreground': '#9ca3af',
       'editor.selectionBackground': tint + '33',
       'editor.lineHighlightBackground': '#00000008'
@@ -76,10 +79,10 @@ function defineThemes(monaco: MonacoModule) {
   monaco.editor.defineTheme('lerd-dark', {
     base: 'vs-dark',
     inherit: true,
-    rules: CONFIG_RULES_DARK,
+    rules: [...CONFIG_RULES_DARK, ...semanticRules(true), keywordRule(tint)],
     colors: {
-      'editor.background': '#161616',
-      'editorGutter.background': '#161616',
+      'editor.background': surface.dark,
+      'editorGutter.background': surface.dark,
       'editorLineNumber.foreground': '#6b7280',
       'editorLineNumber.activeForeground': '#d1d5db',
       'editor.selectionBackground': tint + '55',

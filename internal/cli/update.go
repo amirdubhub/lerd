@@ -622,7 +622,7 @@ func mcpEnabledGlobally(home string) bool {
 // every settings load without starting a process.
 func MCPGlobalConfigured(home string) bool {
 	markers := []string{
-		filepath.Join(home, ".claude", "skills", "lerd", "SKILL.md"),
+		globalContextPath(home, filepath.Join(".claude", "skills", "lerd", "SKILL.md")),
 		filepath.Join(home, ".cursor", "rules", "lerd.mdc"),
 	}
 	for _, p := range markers {

@@ -122,11 +122,35 @@ func TestLaravelOctaneFrankenPHPAdapter(t *testing.T) {
 	// Worker mode runs Octane. Extensions are baked into lerd's derived image now,
 	// so the entrypoint must not install them at container start.
 	worker := strings.Join(fw.FrankenPHPEntrypoint(true), " ")
-	if !strings.Contains(worker, "octane:start") || !strings.Contains(worker, "frankenphp") {
+	if !strings.Contains(worker, "octane:frankenphp") {
 		t.Fatalf("laravel worker should use Octane: %s", worker)
 	}
 	if strings.Contains(worker, "install-php-extensions") || strings.Contains(worker, "apk add") {
 		t.Fatalf("worker entrypoint should not install anything at boot: %s", worker)
+	}
+}
+
+// octane:reload and octane:status run in the FPM container and find the server
+// through the admin address Octane records, so it must be the FrankenPHP
+// container's network address, not its loopback.
+func TestLaravelOctaneAdminReachableFromFPM(t *testing.T) {
+	fw, _ := GetFramework("laravel")
+	for name, ep := range map[string][]string{
+		"worker": fw.FrankenPHP.WorkerEntrypoint,
+		"reload": fw.FrankenPHP.WorkerReloadEntrypoint,
+	} {
+		script := strings.Join(ep, " ")
+		if !strings.Contains(script, "--admin-host=") || !strings.Contains(script, "hostname -i") {
+			t.Errorf("%s entrypoint should bind the admin API to the container address: %s", name, script)
+		}
+		// Octane releases before --admin-host would refuse to start with it.
+		if !strings.Contains(script, "grep -qs admin-host") {
+			t.Errorf("%s entrypoint should pass --admin-host only when Octane supports it: %s", name, script)
+		}
+		// systemd and the launchd unit parser would expand or mangle a $ in Exec=.
+		if strings.Contains(script, "$") {
+			t.Errorf("%s entrypoint must not contain $: %s", name, script)
+		}
 	}
 }
 

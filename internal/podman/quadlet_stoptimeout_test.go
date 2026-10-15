@@ -80,3 +80,16 @@ func TestGenerateCustomQuadlet_UnitTimeoutOutlastsTheContainer(t *testing.T) {
 		})
 	}
 }
+
+// TestGenerateCustomQuadlet_SigtermExitIsAStop pins that a main process with no
+// SIGTERM handler, which dies with 143 on every stop, ends the unit inactive
+// rather than failed.
+func TestGenerateCustomQuadlet_SigtermExitIsAStop(t *testing.T) {
+	withStopTimeoutKey(t, true)
+	svc := &config.CustomService{Name: "search", Image: "getmeili/meilisearch:v1.42"}
+
+	content := GenerateCustomQuadlet(svc)
+	if !strings.Contains(content, "\nSuccessExitStatus=143\n") {
+		t.Errorf("a SIGTERM exit must count as a clean stop\n\n%s", content)
+	}
+}

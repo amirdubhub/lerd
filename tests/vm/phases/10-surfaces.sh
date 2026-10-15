@@ -92,6 +92,10 @@ run_entry "toggle keep awake $host"
 check_out "10.41 [partial] keep awake pins the site" "$name.*pin" bash -c 'lerd idle status | tr "\n" " "'
 run_entry "toggle keep awake $host"
 check_not "10.41 [partial] and unpins it again" "$name.*pin" bash -c 'lerd idle status | tr "\n" " "'
+# Phase 12 deletes phase 6's project, so a rerun of this phase alone rebuilds it.
+if [ ! -d "$wk/vendor" ]; then
+	check "scaffold the Horizon project" bash -c "cd '$PROJECTS' && lerd new vmworkers && cd vmworkers && lerd setup --all --skip-open && lerd composer require laravel/horizon -W --no-interaction && lerd artisan horizon:install --no-interaction && lerd npm install -D chokidar"
+fi
 whost=$(site_host "$wk")
 # site_view <domain>: the site's own view, as the TUI draws it.
 site_view() { tui_screen 140 45 "wait:Dashboard" "keys:\\x10" "wait:Go to or do" "keys:$1" "sleep:1" "keys:\\r" "wait:Doctor" "sleep:2"; }
@@ -208,7 +212,7 @@ check_not "10.92 the FPM log shows no segfault" 'signal 11|SIGSEGV|segfault' bas
 
 systemctl --user restart lerd-ui
 wait_for 30 curl -sf -o /dev/null http://127.0.0.1:7073/api/dumps/status
-check_out "10.93 the debug buffer is saved owner-only" '^600$' stat -c %a "$HOME/.local/share/lerd/dumps-buffer.json"
+check_out "10.93 the debug buffer is saved owner-only" '^600$' stat -c %a "$HOME/.local/share/lerd/debug-events.db"
 check "10.93 a request's debug events survive a lerd-ui restart" bash -c "curl -s 'http://127.0.0.1:7073/api/dumps?rid=$rid2' | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin) else 1)'"
 # The watcher writes in batches, so the row has to be on disk before removing it can find it.
 wait_for 30 recent_since "$started" "any(r.get('rid')=='$rid2' for r in rows)"

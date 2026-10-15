@@ -217,3 +217,55 @@ func TestWatchWorktrees_reportsAWorktreeFoundWhenTheSiteBecomesARepo(t *testing.
 		t.Fatal("the first worktree of a freshly initialised repo was never reported")
 	}
 }
+
+// Deleting a site's repository and cloning it again at the same path (issue
+// #2203) takes every watch with it; the new clone's worktrees still have to be
+// reported, or `lerd worktree add` waits forever for a vhost nobody writes.
+func TestWatchWorktrees_reportsWorktreesOfARecloneAtTheSamePath(t *testing.T) {
+	orig := sitePollInterval
+	sitePollInterval = 50 * time.Millisecond
+	t.Cleanup(func() { sitePollInterval = orig })
+
+	site := t.TempDir()
+	writeWorktreeEntry(t, site, "first")
+
+	added := make(chan string, 8)
+	changed := make(chan string, 8)
+	go func() {
+		_ = WatchWorktrees(
+			func() []string { return []string{site} },
+			func(_, name string) { added <- name },
+			func(_, name string) { changed <- name },
+			func(_, _ string) {},
+		)
+	}()
+
+	head := filepath.Join(site, ".git", "worktrees", "first", "HEAD")
+	ready := time.NewTicker(50 * time.Millisecond)
+	defer ready.Stop()
+	startup := time.After(5 * time.Second)
+	for waiting := true; waiting; {
+		select {
+		case <-changed:
+			waiting = false
+		case <-ready.C:
+			_ = os.WriteFile(head, []byte("ref: refs/heads/first\n"), 0o644)
+		case <-startup:
+			t.Fatal("watcher never came up")
+		}
+	}
+
+	if err := os.RemoveAll(filepath.Join(site, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	writeWorktreeEntry(t, site, "again")
+	deadline := time.After(5 * time.Second)
+	for got := ""; got != "again"; {
+		select {
+		case got = <-added:
+		case <-deadline:
+			t.Fatal("the re-cloned repository's worktree was never reported")
+		}
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/geodro/lerd/internal/config"
 )
 
 // setupWorktreeEnv registers a parent site whose framework serves from a
@@ -38,6 +40,9 @@ nginx:
         root {{root}};
         fastcgi_pass {{fpm}}:9000;
     }
+  fastcgi_params:
+    SHOP_ROOT: "{{root}}"
+    SHOP_PUBLIC: "{{public}}"
 `
 	if err := os.WriteFile(filepath.Join(store, "magento.yaml"), []byte(fw), 0644); err != nil {
 		t.Fatalf("write framework: %v", err)
@@ -171,5 +176,41 @@ func TestGenerateWorktreeVhostUnknownParentFallsBack(t *testing.T) {
 	}
 	if !strings.Contains(out, "fastcgi_pass $fpm:9000;") {
 		t.Errorf("missing shared FPM pass in:\n%s", out)
+	}
+}
+
+// A framework's fastcgi params reach every generated vhost through the real
+// generators, expanded to that checkout's own path: a worktree must not hand PHP
+// the parent's.
+func TestGeneratorsRenderFrameworkFastCGIParams(t *testing.T) {
+	parent, wt := setupWorktreeEnv(t, "")
+	site, err := config.FindSite("shop")
+	if err != nil {
+		t.Fatalf("FindSite: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		generate func() error
+		domain   string
+		path     string
+	}{
+		"site http":     {func() error { return GenerateVhost(*site, "8.4") }, "shop.test", parent},
+		"site https":    {func() error { return GenerateSSLVhost(*site, "8.4") }, "shop.test-ssl", parent},
+		"worktree http": {func() error { return GenerateWorktreeVhost("feature.shop.test", wt, "8.4", "shop", "feature") }, "feature.shop.test", wt},
+		"worktree https": {func() error {
+			return GenerateWorktreeSSLVhost("feature.shop.test", wt, "8.4", "shop.test", "shop", "feature")
+		}, "feature.shop.test", wt},
+	} {
+		if err := tc.generate(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		out := readWorktreeConf(t, tc.domain)
+		for _, want := range []string{
+			`fastcgi_param SHOP_ROOT "` + tc.path + `";`,
+			`fastcgi_param SHOP_PUBLIC "` + tc.path + `/pub";`,
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: missing %q in:\n%s", name, want, out)
+			}
+		}
 	}
 }

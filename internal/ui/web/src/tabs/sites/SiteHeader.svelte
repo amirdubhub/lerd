@@ -3,6 +3,7 @@
   import Badge from '$components/Badge.svelte';
   import BackButton from '$components/BackButton.svelte';
   import { isDesktop } from '$lib/media';
+  import { sidePanelHidden } from '$stores/sidePanel';
   import FrameworkMark from '$components/FrameworkMark.svelte';
   import { frameworkMarks } from '$stores/frameworkMarks';
   import {
@@ -471,6 +472,9 @@
         <span>{m.sites_initGit()}</span>
       </button>
     </div>
+  {:else if $sidePanelHidden && $isDesktop}
+    <!-- The list's restore button pins to this strip; without it it would cover the address row. -->
+    <div class="page-header"></div>
   {/if}
 
   <div class="p-3 flex items-center gap-3">

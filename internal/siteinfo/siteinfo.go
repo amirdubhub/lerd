@@ -142,6 +142,8 @@ type EnrichedSite struct {
 	StripeSecretSet   bool
 	StripeRunning     bool
 	StripeWebhookPath string
+	// StripeSecretEnvKey is the .env key the Stripe secret was resolved from.
+	StripeSecretEnvKey string
 
 	// Custom framework workers
 	FrameworkWorkers []WorkerInfo
@@ -531,8 +533,9 @@ func (e *EnrichedSite) enrichFPM() {
 }
 
 func (e *EnrichedSite) enrichStripe() {
-	if config.StripeSecretSet(e.Path) {
+	if key, val := config.ResolveStripeSecret(e.Path); val != "" {
 		e.StripeSecretSet = true
+		e.StripeSecretEnvKey = key
 		e.StripeWebhookPath = config.StripeWebhookPath(e.Path)
 		status, _ := unitStatusFn("lerd-stripe-" + e.Name)
 		e.StripeRunning = status == "active"

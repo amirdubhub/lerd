@@ -621,3 +621,27 @@ func TestInitialize_instructionsPickTheWorktreeDatabase(t *testing.T) {
 		}
 	}
 }
+
+// A plain git switch or pull leaves the database on the old branch's schema,
+// so the instructions walk the switch through the db and exec tools.
+func TestInitialize_instructionsCoverABranchSwitch(t *testing.T) {
+	for _, want := range []string{"git switch", "`db` `snapshot`", "git_branch", "`restore`", "`db_isolate` with `source` main", "`exec`", "migrations or a restore"} {
+		if !strings.Contains(serverInstructions, want) {
+			t.Errorf("instructions do not mention %q", want)
+		}
+	}
+	// The target branch's packages go in before its migrations need them.
+	if c, m := strings.Index(serverInstructions, "composer when composer.lock changed"), strings.Index(serverInstructions, "then its new migrations"); c < 0 || m < c {
+		t.Error("instructions do not run composer before the new branch's migrations")
+	}
+}
+
+// The skill loads only when its description matches the task, which a browser
+// test does not, so the always-loaded instructions carry the request check.
+func TestInitialize_instructionsCheckABrowserTest(t *testing.T) {
+	for _, want := range []string{"browser", "X-Lerd-Rid", "`request` `lenses`", "`browser_toggle`", "`diag` `browser_events`"} {
+		if !strings.Contains(serverInstructions, want) {
+			t.Errorf("instructions do not mention %q", want)
+		}
+	}
+}

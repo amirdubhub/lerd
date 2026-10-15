@@ -426,7 +426,7 @@ lerd fetch 7.4 8.0
 
 ## Prerelease PHP versions
 
-PHP 8.6 is still in beta upstream, and lerd builds it so a project can run its test suite against it before release. It is offered as a prerelease everywhere a version is picked, in the dashboard's version cards and both PHP dropdowns, so it is never chosen in the belief that it behaves like a released version:
+PHP 8.6 is not released upstream yet, and lerd builds it so a project can run its test suite against it before release. It is offered as a prerelease everywhere a version is picked, in the dashboard's version cards and both PHP dropdowns, so it is never chosen in the belief that it behaves like a released version. Once it is installed, its version card names the stage of the build it carries, alpha, beta or RC, read from the image itself, so the mark follows upstream without a lerd update; before that it reads preview:
 
 - It builds from the `8.6-rc` image the PHP Docker library publishes through beta and RC, because there is no plain `8.6-fpm-alpine` tag until release. That switches to the released tag when 8.6 ships, with nothing to change on your side.
 - `lerd fetch` with no arguments builds the released versions only. A prerelease builds when you name it.

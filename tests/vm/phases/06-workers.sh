@@ -30,7 +30,8 @@ check "6.4 worker start/stop for a non-queue worker" bash -c "! systemctl --user
 # requires the package. Horizon supersedes the plain queue worker, so they get
 # a throwaway project of their own rather than changing demo.
 wk=$PROJECTS/vmworkers
-if [ ! -d "$wk/vendor" ]; then
+# Phase 10 run alone scaffolds it with Horizon only, so Reverb decides.
+if ! grep -q laravel/reverb "$wk/composer.json" 2>/dev/null; then
 	rm -rf "${PROJECTS:?}/vmworkers"
 	check "scaffold the throwaway project" bash -c "cd '$PROJECTS' && lerd new vmworkers && cd vmworkers && lerd setup --all --skip-open"
 	check "require laravel/horizon" bash -c "cd '$wk' && lerd composer require laravel/horizon -W --no-interaction && lerd artisan horizon:install --no-interaction"
@@ -85,12 +86,12 @@ one_reload_per_batch() {
 }
 check "lerd idle on" lerd idle on
 check "lerd idle timeout 1m" lerd idle timeout 1m
-t=@$(date +%s)
+t=$(journal_now)
 check "workers suspend after the timeout" wait_for 150 idle_logged "$t" suspended "$name"
 check_not "the queue is down" '^active$' systemctl --user is-active "lerd-queue-$name"
 check_not "and the schedule with it" '^active$' systemctl --user is-active "lerd-schedule-$name"
 check "a site's workers sleep with one daemon-reload" one_reload_per_batch "$t"
-t=@$(date +%s)
+t=$(journal_now)
 curl -ks -o /dev/null "$url"
 check "6.8 hitting the site resumes them" wait_for 60 idle_logged "$t" resumed "$name"
 check "the queue is back" wait_for 30 unit_active "lerd-queue-$name"
@@ -131,6 +132,9 @@ only_core() { ! podman ps --format '{{.Names}}' | grep -Ev '^lerd-(nginx|dns|php
 check "mysql goes to sleep" wait_for 240 asleep mysql
 check "6.11 [partial] only nginx, dns and php-fpm keep running" wait_for 60 only_core
 svc_json() { api GET /api/services | python3 -c 'import json,sys; print([s.get(sys.argv[2]) for s in json.load(sys.stdin) if s["name"]==sys.argv[1]])' "$1" "$2"; }
+# The dashboard's snapshot can trail the flag file by a few seconds.
+svc_asleep() { svc_json "$1" idle_suspended | grep -q True; }
+wait_for 10 svc_asleep mysql
 check_out "6.11 [partial] the dashboard API marks mysql idle_suspended" '\[True\]' svc_json mysql idle_suspended
 check_out "6.11 [partial] the vhost is switched to the waking one" '_lerd/wake' cat "$vhost"
 r=$(cold "$url")

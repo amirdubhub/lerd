@@ -365,13 +365,24 @@ func RefreshGlobalAISkills(home string, verbose bool) error {
 	return writeGlobalContexts(home, verbose, false)
 }
 
+// globalContextPath resolves a client's user-scope doc under home, except that
+// Claude Code reads its config from CLAUDE_CONFIG_DIR when a profile sets it.
+func globalContextPath(home, rel string) string {
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	claudeRel, err := filepath.Rel(".claude", rel)
+	if dir == "" || err != nil || strings.HasPrefix(claudeRel, "..") {
+		return filepath.Join(home, rel)
+	}
+	return filepath.Join(dir, claudeRel)
+}
+
 func writeGlobalContexts(home string, verbose, createMissing bool) error {
 	for _, c := range aiClients {
 		for _, cx := range c.Contexts {
 			if cx.Global == "" {
 				continue
 			}
-			full := filepath.Join(home, cx.Global)
+			full := globalContextPath(home, cx.Global)
 			if !createMissing && !contextAlreadyPresent(full, cx) {
 				continue
 			}
@@ -379,7 +390,7 @@ func writeGlobalContexts(home string, verbose, createMissing bool) error {
 				return fmt.Errorf("writing %s: %w", cx.Global, err)
 			}
 			if verbose {
-				feedback.Note("wrote ~/" + cx.Global)
+				feedback.Note("wrote " + full)
 			}
 		}
 	}
@@ -532,7 +543,7 @@ func RemoveGlobalAISkills(home string, verbose bool) error {
 			if cx.Global == "" {
 				continue
 			}
-			full := filepath.Join(home, cx.Global)
+			full := globalContextPath(home, cx.Global)
 			if changed, err := removeClientContext(full, cx); err != nil {
 				return err
 			} else if changed {

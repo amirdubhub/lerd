@@ -5,6 +5,8 @@
   import { pageSubject, pageTitle } from '$lib/pageTitle';
   import NavRail from '$components/NavRail.svelte';
   import SidePanel from '$components/SidePanel.svelte';
+  import { sidePanelHidden } from '$stores/sidePanel';
+  import PanelToggleButton from '$components/PanelToggleButton.svelte';
   import MobileHeader from '$components/MobileHeader.svelte';
   import MobileNav from '$components/MobileNav.svelte';
   import { tab, routeRest } from '$stores/route';
@@ -106,6 +108,7 @@
   const showMobileDetail = $derived(Boolean($routeRest));
   const onApps = $derived($mobileView === 'apps');
   const onDashboard = $derived($tab === 'dashboard');
+  const listHidden = $derived($sidePanelHidden && !onDashboard);
 
   const sectionLabels = $derived({
     dashboard: m.nav_dashboard(),
@@ -130,7 +133,7 @@
   <NavRail />
 
   {#if !onDashboard}
-    <SidePanel>
+    <SidePanel hidden={listHidden}>
       {#if $tab === 'sites'}
         <SitesTab />
       {:else if $tab === 'services'}
@@ -153,7 +156,9 @@
 
     <!-- One layout is mounted, never both, so a page loads its data once. -->
     {#if $isDesktop}
-      <div class="flex flex-col flex-1 overflow-hidden">
+      <!-- With the list hidden the detail meets the rail: list-hidden curves the body under its header and makes room for the button that brings the list back. -->
+      <div class="flex flex-col flex-1 overflow-hidden relative" class:list-hidden={listHidden}>
+        {#if listHidden}<PanelToggleButton title={m.nav_showList()} />{/if}
         {#if $tab === 'dashboard'}
           <DashboardTab />
         {:else if $tab === 'sites'}

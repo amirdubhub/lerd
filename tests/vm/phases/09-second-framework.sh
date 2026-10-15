@@ -48,6 +48,8 @@ check_out "9.9 both serve at once" '^(200|404)$' code "$(site_url "$SHOP_DIR")"
 # CodeIgniter 3 runs on PHP 7.2-7.4, which a fresh install does not carry.
 lerd php:list 2>/dev/null | grep -q '7\.4' || check "add PHP 7.4 for CodeIgniter 3" lerd php:rebuild 7.4
 scaffold ci3 codeigniter 3
+# CodeIgniter 4 runs on PHP 8.2-8.4; phase 4 adds 8.4, a phase run alone does not.
+lerd php:list 2>/dev/null | grep -q '8\.4' || check "add PHP 8.4 for CodeIgniter 4" lerd php:rebuild 8.4
 scaffold ci4 codeigniter 4 >/dev/null 2>&1
 check_out "CodeIgniter 3 links on its own definition, PHP 7.2-7.4" '^ci3 .* 7\.[234] .*codeigniter 3' lerd sites
 check_out "9.2 CodeIgniter 4 links on its own definition, PHP 8.2-8.4" '^ci4 .* 8\.[234] .*codeigniter 4' lerd sites
@@ -132,3 +134,29 @@ fi
 check "the mobile half installs" bash -c "cd $natm && (grep -q nativephp/mobile composer.json || lerd composer require nativephp/mobile -W --no-interaction)"
 check_out "its commands are offered on Laravel" 'native:install-mobile' bash -c "cd $natm && lerd run"
 check_not "9.15 [partial] and not on Symfony" 'native:install-mobile' bash -c "cd $SHOP_DIR && lerd run"
+
+# A framework definition can hand PHP server variables through nginx, which is
+# how Testbench finds the package it serves. A throwaway user definition keyed
+# off a marker file stands in for it, so the check needs no package install.
+fcgi=$PROJECTS/vmfcgi
+mkdir -p "$fcgi/public" "$HOME/.config/lerd/frameworks"
+touch "$fcgi/vmfcgi.marker"
+cat >"$fcgi/public/index.php" <<'PHP'
+<?php
+echo ($_SERVER['VM_ROOT'] ?? 'unset'), '|', isset($_SERVER['VM_BAD']) ? 'bad' : 'nobad';
+PHP
+cat >"$HOME/.config/lerd/frameworks/vmfcgi.yaml" <<'YAML'
+name: vmfcgi
+label: VM FastCGI
+public_dir: public
+detect:
+  - file: vmfcgi.marker
+nginx:
+  fastcgi_params:
+    VM_ROOT: "{{root}}"
+    VM_BAD: "$price"
+YAML
+check_out "the dollar entry is dropped with a warning at link" 'dropping vmfcgi fastcgi param VM_BAD' bash -c "cd $fcgi && lerd link"
+check_out "9.17 fastcgi_params reach PHP with {{root}} expanded, the dollar entry left out" "^${fcgi}\|nobad$" curl -s --max-time 30 "$(site_url "$fcgi")"
+(cd "$fcgi" && lerd unlink </dev/null >/dev/null 2>&1)
+rm -rf "$fcgi" "$HOME/.config/lerd/frameworks/vmfcgi.yaml"

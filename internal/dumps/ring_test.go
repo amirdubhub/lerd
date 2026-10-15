@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func mkEvent(id string) Event {
@@ -581,5 +582,115 @@ func TestRing_ImportIsAllOrNothing(t *testing.T) {
 	}
 	if got := ids(r.Snapshot()); fmt.Sprint(got) != "[a]" {
 		t.Errorf("after the retry = %v, want each event once", got)
+	}
+}
+
+// The slowest-request refresh marks a request kept only after it ran, so a
+// burst that fills the buffer first must not trim it away in the meantime.
+func TestRing_TrimSparesEventsTheKeepRefreshHasNotSeen(t *testing.T) {
+	r := NewRing(2)
+	r.Append(ridEvent("slow", "r1"))
+	for i := 0; i < 2*trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint(i)))
+	}
+	r.SetKeep(map[string]bool{"r1": true})
+	if got := ids(r.Filter(FilterOpts{RID: "r1"})); fmt.Sprint(got) != "[slow]" {
+		t.Fatalf("filter r1 = %v, want the request kept by a refresh after the burst", got)
+	}
+}
+
+func TestRing_TrimDropsEventsOnceTheGraceHasPassed(t *testing.T) {
+	clock := time.Now()
+	ringNow = func() time.Time { return clock }
+	t.Cleanup(func() { ringNow = time.Now })
+
+	r := NewRing(2)
+	r.Append(ridEvent("old", "r1"))
+	for i := 0; i < trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint(i)))
+	}
+	clock = clock.Add(trimGrace)
+	for i := 0; i < trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint("late", i)))
+	}
+	r.SetKeep(map[string]bool{"r1": true})
+	if got := r.Filter(FilterOpts{RID: "r1"}); len(got) != 0 {
+		t.Fatalf("filter r1 = %v, want it trimmed once older than the grace", ids(got))
+	}
+}
+
+// A request still running past the grace keeps its early events while it goes
+// on sending, since the keep refresh only learns of it once it has finished.
+func TestRing_TrimSparesARequestStillSendingEvents(t *testing.T) {
+	clock := time.Now()
+	ringNow = func() time.Time { return clock }
+	t.Cleanup(func() { ringNow = time.Now })
+
+	r := NewRing(2)
+	r.Append(ridEvent("early", "r1"))
+	for i := 0; i < trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint(i)))
+	}
+	clock = clock.Add(trimGrace)
+	r.Append(ridEvent("late", "r1"))
+	for i := 0; i < trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint("after", i)))
+	}
+	r.SetKeep(map[string]bool{"r1": true})
+	if got := ids(r.Filter(FilterOpts{RID: "r1"})); fmt.Sprint(got) != "[early late]" {
+		t.Fatalf("filter r1 = %v, want both events of the long request", got)
+	}
+}
+
+// Emptying the buffer lets SQLite hand out low seqs again, which the ages
+// marked before must not cover.
+func TestRing_TrimGraceStartsOverAfterARemove(t *testing.T) {
+	clock := time.Now()
+	ringNow = func() time.Time { return clock }
+	t.Cleanup(func() { ringNow = time.Now })
+
+	r := NewRing(2)
+	for i := 0; i < 4*trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint(i)))
+		if i == trimEvery {
+			clock = clock.Add(trimGrace)
+		}
+	}
+	r.Remove(func(Event) bool { return true })
+	r.Append(ridEvent("slow", "r1"))
+	for i := 0; i < 2*trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint("new", i)))
+	}
+	r.SetKeep(map[string]bool{"r1": true})
+	if got := ids(r.Filter(FilterOpts{RID: "r1"})); fmt.Sprint(got) != "[slow]" {
+		t.Fatalf("filter r1 = %v, want the request kept by a refresh after the burst", got)
+	}
+}
+
+// A CLI worker keeps one rid for its whole life, and no slowest route can name
+// it, so its steady stream must not hold its old events forever.
+func TestRing_TrimDropsAWorkersOldEventsWhileItRuns(t *testing.T) {
+	clock := time.Now()
+	ringNow = func() time.Time { return clock }
+	t.Cleanup(func() { ringNow = time.Now })
+
+	worker := func(id string) Event {
+		e := ridEvent(id, "w1")
+		e.Ctx.Type = "cli"
+		return e
+	}
+	r := NewRing(2)
+	r.Append(worker("early"))
+	for i := 0; i < trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint(i)))
+	}
+	clock = clock.Add(trimGrace)
+	r.Append(worker("late"))
+	for i := 0; i < trimEvery; i++ {
+		r.Append(mkEvent(fmt.Sprint("after", i)))
+	}
+	r.SetKeep(map[string]bool{"w1": true})
+	if got := ids(r.Filter(FilterOpts{RID: "w1"})); fmt.Sprint(got) != "[late]" {
+		t.Fatalf("filter w1 = %v, want only the worker's event inside the grace", got)
 	}
 }

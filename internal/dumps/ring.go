@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -34,10 +35,26 @@ type Ring struct {
 	// untrimmed counts appends since the last trim. Readers only look at the
 	// newest cap anyway, so the delete runs in batches rather than per event.
 	untrimmed int
+	// marks are the newest seq at each recent trim, and settled the newest of
+	// them older than trimGrace: no trim deletes past it.
+	marks   []seqMark
+	settled int64
+}
+
+type seqMark struct {
+	seq int64
+	at  time.Time
 }
 
 // trimEvery is how many appends go by between trims.
 const trimEvery = 256
+
+// trimGrace is how long a trim spares events past the newest cap: two of
+// lerd-ui's slowest-request refreshes, so one has run before a request can go.
+const trimGrace = 30 * time.Second
+
+// ringNow is the clock trims age events by; a seam for tests.
+var ringNow = time.Now
 
 const ringSchema = `
 CREATE TABLE IF NOT EXISTS events (
@@ -220,11 +237,41 @@ func (r *Ring) SetKeep(keep map[string]bool) {
 	r.trim()
 }
 
-// trim deletes what fell out of the newest cap events and no kept request ran.
+// trim deletes what fell out of the newest cap events and no kept request ran,
+// once it is older than trimGrace and its web request has gone quiet that long.
 func (r *Ring) trim() {
 	r.untrimmed = 0
-	_, err := r.db.Exec(`DELETE FROM events WHERE kept = 0 AND seq < ?`, r.floor())
+	settled := r.settle()
+	_, err := r.db.Exec(`DELETE FROM events WHERE kept = 0 AND seq < ? AND seq <= ?
+		AND rid NOT IN (SELECT rid FROM events WHERE seq > ? AND rid != '' AND ctx = 'fpm')`, r.floor(), settled, settled)
 	warnRing("dropping old events", err)
+}
+
+// forgetAges drops the trim marks after a delete, since SQLite reuses the
+// seqs of deleted newest rows and the old marks would cover the new events.
+func (r *Ring) forgetAges() {
+	r.marks, r.settled = nil, 0
+}
+
+// dropBefore deletes the events before seq that no kept request ran.
+func (r *Ring) dropBefore(seq int64) {
+	r.untrimmed = 0
+	_, err := r.db.Exec(`DELETE FROM events WHERE kept = 0 AND seq < ?`, seq)
+	warnRing("dropping old events", err)
+}
+
+// settle marks the newest seq now and returns the newest one marked at least
+// trimGrace ago.
+func (r *Ring) settle() int64 {
+	now := ringNow()
+	var newest int64
+	warnRing("reading the buffer", r.db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&newest))
+	r.marks = append(r.marks, seqMark{seq: newest, at: now})
+	for len(r.marks) > 0 && now.Sub(r.marks[0].at) >= trimGrace {
+		r.settled = r.marks[0].seq
+		r.marks = r.marks[1:]
+	}
+	return r.settled
 }
 
 // floor is the oldest seq still among the newest cap events, 0 while the ring
@@ -266,15 +313,16 @@ func (r *Ring) Clear() {
 	defer r.mu.Unlock()
 	_, err := r.db.Exec(`DELETE FROM events`)
 	warnRing("clearing events", err)
+	r.forgetAges()
 }
 
 // Remove drops every event drop matches, kept requests included.
 func (r *Ring) Remove(drop func(Event) bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// First, or rows already out of the buffer would slide back into it once
-	// the removed ones stop counting toward cap.
-	r.trim()
+	// First, and without the grace, or rows already out of the buffer would
+	// slide back into it once the removed ones stop counting toward cap.
+	r.dropBefore(r.floor())
 	rows, err := r.db.Query(`SELECT seq, data FROM events`)
 	if err != nil {
 		warnRing("reading events", err)
@@ -303,6 +351,7 @@ func (r *Ring) Remove(drop func(Event) bool) {
 		}
 	}
 	warnRing("removing events", tx.Commit())
+	r.forgetAges()
 }
 
 // Import appends the events an older lerd-ui saved to a JSON file at path,

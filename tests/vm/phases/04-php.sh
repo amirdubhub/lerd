@@ -101,7 +101,11 @@ for c in $(podman ps --format '{{.Names}}' | grep -E '^lerd-php[0-9]+-fpm$'); do
 	podman exec "$c" php -m | grep -qx PDO_ODBC || { ok=0; echo "$c has no PDO_ODBC"; }
 done
 dpkg -s libsqliteodbc >/dev/null 2>&1 || sudo apt-get install -y -qq libsqliteodbc >/dev/null 2>&1 || sudo dnf install -y -q sqliteodbc >/dev/null 2>&1
-driver=$(ls /usr/lib/x86_64-linux-gnu/odbc/libsqlite3odbc.so /usr/lib64/libsqlite3odbc.so 2>/dev/null | head -1)
+driver=$(ls /usr/lib/x86_64-linux-gnu/odbc/libsqlite3odbc.so /usr/lib64/libsqlite3odbc.so /usr/lib/libsqlite3odbc.so 2>/dev/null | head -1)
+# lerd refuses a driver in /usr/lib (Arch's path), as mounting it would shadow the container's own.
+if [[ $driver == /usr/lib/*.so && $driver != /usr/lib/*/* ]]; then
+	mkdir -p ~/odbc-drivers && cp -L "$driver" ~/odbc-drivers/ && driver=$HOME/odbc-drivers/$(basename "$driver")
+fi
 if [ "$ok" = 1 ] && [ -n "$driver" ] && lerd php:odbc add vmsqlite "$driver" </dev/null && lerd php:odbc list | grep -q vmsqlite && lerd php:odbc remove vmsqlite </dev/null; then
 	_pass "4.18 every version has odbc and PDO_ODBC, and a vendor driver registers, lists and unregisters"
 else
@@ -115,7 +119,7 @@ cp -f "$DEMO_DIR/.lerd.yaml" /tmp/lerd-vm-demo-lerd.yaml
 sed -i '/^php_version:/d' "$DEMO_DIR/.lerd.yaml" && echo 'php_version: "8.1"' >>"$DEMO_DIR/.lerd.yaml"
 (cd "$DEMO_DIR" && LERD_OFFLINE=1 lerd link </dev/null >/dev/null 2>&1)
 served=$(cd "$DEMO_DIR" && lerd which | awk '$1=="PHP" {print $2}')
-check_out "4.19 tinker and logs run on the version the site is served with" "^$served\\..*logs=ok" bash -c "cd '$DEMO_DIR' && lerd artisan tinker --execute='echo PHP_VERSION;' | tail -1; lerd logs -n 5 >/dev/null 2>&1 && echo logs=ok"
+check_out "4.19 tinker and logs run on the version the site is served with" "(^| )$served\\..*logs=ok" bash -c "cd '$DEMO_DIR' && lerd artisan tinker --execute='echo PHP_VERSION;' | tail -1; lerd logs -n 5 >/dev/null 2>&1 && echo logs=ok"
 cp /tmp/lerd-vm-demo-lerd.yaml "$DEMO_DIR/.lerd.yaml"
 (cd "$DEMO_DIR" && lerd link </dev/null >/dev/null 2>&1)
 

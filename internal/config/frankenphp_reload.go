@@ -116,7 +116,7 @@ func (fw *Framework) ResolveFrankenPHPWorkerEntrypoint(sitePath string, worker b
 
 // FrankenPHPQuadletSpec resolves the entrypoint and env a site's FrankenPHP
 // container should run with, applying the reload-aware worker entrypoint
-// (octane:start --watch) when the project opted in. Both the apply path
+// (octane:frankenphp --watch) when the project opted in. Both the apply path
 // (siteops.FinishFrankenPHPLink) and the global install refresh resolve through
 // here, so a site's quadlet can't diverge between the two writers.
 func (s *Site) FrankenPHPQuadletSpec() (entrypoint []string, env map[string]string) {

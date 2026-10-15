@@ -182,7 +182,7 @@ LAN sharing works transparently since it proxies through nginx.
 
 ## Rebuilding
 
-`lerd rebuild` removes the old image, rebuilds from the Containerfile, and restarts the container:
+`lerd rebuild` builds a new image from the Containerfile, restarts the container on it, and only then removes the old image, so the site keeps serving while the build runs:
 
 ```bash
 lerd rebuild

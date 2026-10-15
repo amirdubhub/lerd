@@ -96,3 +96,20 @@ workers:
 		t.Error("a definition that declares no requires_service must leave it nil")
 	}
 }
+
+// A definition's fastcgi params ride on its nginx block, beside the snippet.
+func TestFrameworkNginxFastCGIParamsParse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testbench.yaml")
+	body := `name: testbench
+nginx:
+  fastcgi_params:
+    TESTBENCH_WORKING_PATH: "{{root}}"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write definition: %v", err)
+	}
+	fw := loadFrameworkYAML(path)
+	if fw == nil || fw.Nginx == nil || fw.Nginx.FastCGIParams["TESTBENCH_WORKING_PATH"] != "{{root}}" {
+		t.Fatalf("fastcgi_params not parsed: %+v", fw)
+	}
+}

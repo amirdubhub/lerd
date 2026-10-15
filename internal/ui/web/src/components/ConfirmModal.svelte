@@ -11,13 +11,15 @@
     confirmLabel: string;
     danger?: boolean;
     loading?: boolean;
+    // Holds the confirm back, for a choice in `extra` that leaves nothing to do.
+    disabled?: boolean;
     // Extra controls rendered under the body, for a confirmation that also
     // carries a choice (a checkbox, a scope toggle) rather than only a yes/no.
     extra?: Snippet;
     onconfirm: () => void;
     onclose: () => void;
   }
-  let { open, title, body, confirmLabel, danger = false, loading = false, extra, onconfirm, onclose }: Props = $props();
+  let { open, title, body, confirmLabel, danger = false, loading = false, disabled = false, extra, onconfirm, onclose }: Props = $props();
 </script>
 
 <Modal {open} {title} onclose={() => { if (!loading) onclose(); }} size="sm">
@@ -30,7 +32,7 @@
 
   {#snippet footer()}
     <DetailButton onclick={onclose} disabled={loading}>{m.common_cancel()}</DetailButton>
-    <DetailButton tone={danger ? 'danger' : 'primary'} onclick={onconfirm} loading={loading} disabled={loading}>
+    <DetailButton tone={danger ? 'danger' : 'primary'} onclick={onconfirm} loading={loading} disabled={loading || disabled}>
       {confirmLabel}
     </DetailButton>
   {/snippet}

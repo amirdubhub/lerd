@@ -56,3 +56,23 @@ func TestContainerRunning_UsesSnapshotWhenPresent(t *testing.T) {
 		t.Error("unit absent from the snapshot must read as not running")
 	}
 }
+
+// A stop that lands before podman starts a container leaves it in Created,
+// where --rm never fires, so Stop has to remove containers that exist but do
+// not run, or a stripe listener outlives its unit.
+func TestStop_RemovesContainerThatNeverStarted(t *testing.T) {
+	prevExists, prevRemove, prevLaunchctl := containerExistsFn, removeContainerFn, launchctl
+	t.Cleanup(func() { containerExistsFn, removeContainerFn, launchctl = prevExists, prevRemove, prevLaunchctl })
+
+	containerExistsFn = func(string) (bool, error) { return true, nil }
+	var removed []string
+	removeContainerFn = func(name string) { removed = append(removed, name) }
+	launchctl = func(...string) ([]byte, error) { return nil, nil }
+
+	if err := (&darwinServiceManager{}).Stop("lerd-stripe-app"); err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "lerd-stripe-app" {
+		t.Errorf("removed %v, want the created container removed", removed)
+	}
+}

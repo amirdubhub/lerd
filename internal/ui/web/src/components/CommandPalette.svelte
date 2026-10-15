@@ -21,7 +21,7 @@
   import { openDocs } from '$stores/dashboard';
   import { theme } from '$stores/theme';
   import { loadVersion } from '$stores/version';
-  import { goToTab } from '$stores/route';
+  import { goToTab, tab } from '$stores/route';
   import { accessMode } from '$stores/accessMode';
   import { paletteOpen, openCommandPalette, closeCommandPalette } from '$stores/commandPalette';
   import {
@@ -32,6 +32,8 @@
   } from '$stores/commands';
   import FrameworkMark from '$components/FrameworkMark.svelte';
   import ServiceIcon from '$components/ServiceIcon.svelte';
+  import { toggleSidePanel } from '$stores/sidePanel';
+  import { isDesktop } from '$lib/media';
   import { m } from '../paraglide/messages.js';
 
   type Group = 'pages' | 'sites' | 'services' | 'presets' | 'toggles' | 'commands' | 'actions';
@@ -224,6 +226,7 @@
     }
     list.push({ id: 'act:checkUpdates', label: m.palette_action_checkUpdates(), group: 'actions', action: () => loadVersion(true) });
     list.push({ id: 'act:docs', label: m.palette_action_openDocs(), group: 'actions', action: openDocs });
+    if ($isDesktop && $tab !== 'dashboard') list.push({ id: 'act:toggleList', label: m.palette_action_toggleList(), group: 'actions', action: toggleSidePanel });
     list.push({
       id: 'act:openInBrowser',
       label: m.palette_action_openCurrentSite(),

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -168,5 +169,20 @@ func TestProjectConfig_StripeNotEmpty(t *testing.T) {
 	c := &ProjectConfig{Stripe: &StripeConfig{Path: "/x"}}
 	if c.IsEmpty() {
 		t.Errorf("ProjectConfig with a Stripe block must not be IsEmpty")
+	}
+}
+
+func TestRequireStripeSecretInEnv(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".env"), "STRIPE_SECRET_KEY=sk_node\n")
+	if err := RequireStripeSecretInEnv(dir, "STRIPE_SECRET_KEY"); err != nil {
+		t.Errorf("key with a value: unexpected error %v", err)
+	}
+	if err := RequireStripeSecretInEnv(dir, ""); err != nil {
+		t.Errorf("empty key: unexpected error %v", err)
+	}
+	err := RequireStripeSecretInEnv(dir, "STRIPE_SECRET")
+	if err == nil || !strings.Contains(err.Error(), "STRIPE_SECRET") {
+		t.Errorf("missing key: got %v, want an error naming STRIPE_SECRET", err)
 	}
 }

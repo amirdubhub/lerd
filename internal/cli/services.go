@@ -363,6 +363,7 @@ func serviceUpdateHint(name, status string) string {
 }
 
 func newServiceUpdateCmd() *cobra.Command {
+	var all bool
 	cmd := &cobra.Command{
 		Use:   "update <service> [tag]",
 		Short: "Pull a newer image for a service and restart it",
@@ -370,9 +371,20 @@ func newServiceUpdateCmd() *cobra.Command {
 
 With no tag argument, applies the safe in-strategy update (e.g. mysql 8.4 → 8.4.9).
 Pass an explicit tag to opt into the cross-strategy upgrade (e.g. meilisearch
-v1.7.6 → v1.42.1) — this may require manual data migration; you've been warned.`,
-		Args: cobra.RangeArgs(1, 2),
+v1.7.6 → v1.42.1) — this may require manual data migration; you've been warned.
+
+With --all, applies the safe update to every installed service that has one,
+one at a time, and reports each failure without stopping the rest.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if all {
+				return cobra.NoArgs(cmd, args)
+			}
+			return cobra.RangeArgs(1, 2)(cmd, args)
+		},
 		RunE: func(_ *cobra.Command, args []string) error {
+			if all {
+				return updateAllServices()
+			}
 			name := args[0]
 			targetImage := ""
 			if len(args) == 2 {
@@ -389,33 +401,82 @@ v1.7.6 → v1.42.1) — this may require manual data migration; you've been warn
 					targetImage = avail.CurrentImage + ":" + args[1]
 				}
 			}
-			emit := func(ev serviceops.PhaseEvent) {
-				switch ev.Phase {
-				case "checking_registry":
-					feedback.Line("checking registry")
-				case "pulling_image":
-					if ev.Message != "" {
-						feedback.Note(strings.TrimSpace(ev.Message))
-					} else if ev.Image != "" {
-						feedback.Line("pulling " + ev.Image + imagepull.Note(ev.Bytes))
-					}
-				case "writing_quadlet":
-					feedback.Line("writing quadlet for " + ev.Image)
-				case "restarting_unit":
-					feedback.Line("restarting " + ev.Unit)
-				case "done":
-					if ev.Message != "" {
-						feedback.Done(ev.Message)
-					} else {
-						feedback.Done("now on " + feedback.Val(ev.Image))
-					}
-				}
-			}
 			feedback.Begin()
-			return serviceops.UpdateServiceStreaming(name, targetImage, emit)
+			return serviceops.UpdateServiceStreaming(name, targetImage, printServiceUpdatePhase)
 		},
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "Update every installed service that has a safe update")
 	return cmd
+}
+
+func printServiceUpdatePhase(ev serviceops.PhaseEvent) {
+	switch ev.Phase {
+	case "checking_registry":
+		feedback.Line("checking registry")
+	case "pulling_image":
+		if ev.Message != "" {
+			feedback.Note(strings.TrimSpace(ev.Message))
+		} else if ev.Image != "" {
+			feedback.Line("pulling " + ev.Image + imagepull.Note(ev.Bytes))
+		}
+	case "writing_quadlet":
+		feedback.Line("writing quadlet for " + ev.Image)
+	case "restarting_unit":
+		feedback.Line("restarting " + ev.Unit)
+	case "done":
+		if ev.Message != "" {
+			feedback.Done(ev.Message)
+		} else {
+			feedback.Done("now on " + feedback.Val(ev.Image))
+		}
+	}
+}
+
+// outdatedServices keeps the services the registry has a safe update for. A
+// failed lookup skips the service rather than guessing it is current or not.
+func outdatedServices(names []string, check func(string) (*serviceops.UpdateAvailability, error)) []string {
+	var out []string
+	for _, name := range names {
+		if avail, err := check(name); err == nil && avail != nil && avail.Available {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func installedServiceNames() []string {
+	var names []string
+	for _, svc := range knownServices() {
+		if serviceops.ServiceInstalled(svc) {
+			names = append(names, svc)
+		}
+	}
+	customs, _ := config.ListCustomServices()
+	for _, svc := range customs {
+		names = append(names, svc.Name)
+	}
+	return names
+}
+
+func updateAllServices() error {
+	names := outdatedServices(installedServiceNames(), serviceops.CheckUpdateAvailable)
+	if len(names) == 0 {
+		fmt.Println("All services are up to date.")
+		return nil
+	}
+	var failed []string
+	for _, name := range names {
+		feedback.Begin()
+		feedback.Line("updating " + feedback.Val(name))
+		if err := serviceops.UpdateServiceStreaming(name, "", printServiceUpdatePhase); err != nil {
+			feedback.Fail(fmt.Errorf("%s: %w", name, err))
+			failed = append(failed, name)
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("%d of %d services failed to update: %s", len(failed), len(names), strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 func newServiceMigrateCmd() *cobra.Command {

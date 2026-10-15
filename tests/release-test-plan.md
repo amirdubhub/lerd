@@ -858,6 +858,7 @@ NativePHP is supported end to end, and both halves need a look:
       workers and commands come from the package layer rather than the framework
 - [ ] The mobile half builds and its commands are offered on Laravel only
 - [ ] `lerd site:doctor` runs the package's own checks and names what is missing
+- [ ] A framework definition's `nginx.fastcgi_params` reach PHP as server variables, `{{root}}` expanded to the site's path, and an entry carrying `$` is dropped with a warning instead of breaking nginx
 
 ---
 

@@ -5,16 +5,18 @@
     running?: boolean;
     loading?: boolean;
     webhookPath?: string;
+    secretEnvKey?: string;
     onToggle?: () => void;
-    onSaveConfig?: (path: string) => void;
+    onSaveConfig?: (path: string, secretEnvKey: string) => Promise<{ ok: boolean; error?: string }>;
   }
   let {
     running = false,
     loading = false,
     webhookPath = '',
+    secretEnvKey = '',
     onToggle = () => {},
-    onSaveConfig = () => {}
+    onSaveConfig = async () => ({ ok: true })
   }: Props = $props();
 </script>
 
-<StripeControl {running} {loading} {webhookPath} {onToggle} {onSaveConfig} />
+<StripeControl {running} {loading} {webhookPath} {secretEnvKey} {onToggle} {onSaveConfig} />

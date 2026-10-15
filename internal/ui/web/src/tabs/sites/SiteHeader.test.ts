@@ -7,6 +7,7 @@ import { accessMode } from '$stores/accessMode';
 import { editors } from '$stores/editors';
 import { status } from '$stores/status';
 import { status as dumpsStatus } from '$stores/dumps';
+import { sidePanelHidden } from '$stores/sidePanel';
 
 const site = {
   domain: 'app.test',
@@ -306,5 +307,21 @@ describe('SiteHeader', () => {
       expect(queryByRole('button', { name: 'Browser' })).not.toBeInTheDocument();
     });
   });
-});
 
+  // A paused site has no worktree strip, and the list's restore button pins
+  // itself to that strip, so with the list hidden it would sit on the address row.
+  it('keeps a header strip for the restore button on a paused site', async () => {
+    sidePanelHidden.set(true);
+    const paused = { ...worktreeSite, paused: true } as unknown as Site;
+    const { container } = render(Harness, { props: { site: paused } });
+    expect(container.querySelector('.page-header')).not.toBeNull();
+    sidePanelHidden.set(false);
+  });
+
+  it('adds no empty strip on a paused site while the list shows', () => {
+    sidePanelHidden.set(false);
+    const paused = { ...worktreeSite, paused: true } as unknown as Site;
+    const { container } = render(Harness, { props: { site: paused } });
+    expect(container.querySelector('.page-header')).toBeNull();
+  });
+});

@@ -89,7 +89,7 @@ The output panel is styled like a read-only editor: bordered box, monospace, lin
 
 ## Editor
 
-The [Monaco editor](https://microsoft.github.io/monaco-editor/) (the engine behind VS Code) with PHP syntax highlighting, line numbers, bracket matching, undo/redo, and line wrapping. Light/dark theme follows the Lerd theme. Monaco is lazy-loaded the first time you open any editor surface, so it never weighs down the initial dashboard load.
+The [Monaco editor](https://microsoft.github.io/monaco-editor/) (the engine behind VS Code) with PHP syntax highlighting, line numbers, bracket matching, undo/redo, and line wrapping. The editor and the result pane wear the chosen Lerd theme: they sit on the theme's surface in light and dark mode, and keywords take its accent colour. The cog in the toolbar opens a text size control that scales the editor and the result pane together, remembered per browser. Monaco is lazy-loaded the first time you open any editor surface, so it never weighs down the initial dashboard load.
 
 ### Language intelligence (phpantom_lsp)
 
@@ -99,7 +99,7 @@ Because it analyzes the real project, completions are genuinely project-aware: y
 
 Quick fixes and imports are wired in too: the "Class not found" diagnostic offers an **Import `App\Models\X`** action, and accepting a class from the completion list brings its `use` statement along. Imports land at the top of the buffer with a blank line separating them from your code. Document formatting runs through phpantom on `Shift+Alt+F` and automatically on paste.
 
-Highlighting comes from Monaco's own PHP grammar, registered to start inside PHP because tinker buffers carry no `<?php` opener, with phpantom's semantic tokens layered over it for what a grammar cannot know, such as a static call or a closure parameter. The grammar colours the buffer on its own when the server is unavailable.
+Highlighting comes from Monaco's own PHP grammar, registered to start inside PHP because tinker buffers carry no `<?php` opener, with phpantom's full semantic token stream layered over it, so classes, functions, methods and properties are coloured by what they resolve to. Lerd starts phpantom with its own global `.phpantom.toml` asking for `mode = "full"`, since phpantom's default only adds the tokens an editor grammar cannot infer and Monaco's grammar cannot tell those identifiers apart; a project's own `.phpantom.toml` still overrides it. The grammar colours the buffer on its own when the server is unavailable.
 
 The browser connects to the server over a WebSocket (`/api/lsp/php`). `lerd-ui` spawns one `phpantom_lsp` process per connection, rooted at the site (or worktree) path, and bridges its stdio LSP traffic to Monaco. Tinker buffers are headerless PHP, so the bridge presents the document to the server with a synthetic leading `<?php` line (and offsets positions accordingly), you keep typing bare snippets while the server still parses valid PHP.
 

@@ -44,27 +44,27 @@ func RebuildSite(name string) error {
 		return fmt.Errorf("loading .lerd.yaml: %w", err)
 	}
 
-	// Remove old image so build starts fresh.
-	_ = podman.RemoveCustomImage(name)
-
-	feedback.Begin()
-	feedback.Line("building " + podman.CustomImageName(name))
-	if err := podman.BuildCustomImage(name, site.Path, proj.Container); err != nil {
-		return err
-	}
-	podman.StoreContainerfileHash(name, site.Path, proj.Container)
-
-	// Restart the container to pick up the new image.
 	unit := podman.CustomContainerName(name)
 	if site.IsCustomFPM() {
 		unit = podman.CustomFPMContainerName(name)
 	}
 	running, _ := podman.ContainerRunning(unit)
-	if running {
+
+	feedback.Begin()
+	feedback.Line("building " + podman.CustomImageName(name))
+	err = podman.RebuildCustomImage(name, site.Path, proj.Container, func() error {
+		if !running {
+			return nil
+		}
 		if err := podman.RestartUnit(unit); err != nil {
 			return fmt.Errorf("restarting container: %w", err)
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
+	podman.StoreContainerfileHash(name, site.Path, proj.Container)
 
 	feedback.Done("rebuilt and restarted " + feedback.Val(name))
 	return nil

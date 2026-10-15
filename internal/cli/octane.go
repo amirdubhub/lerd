@@ -25,7 +25,7 @@ func NewOctaneCmd() *cobra.Command {
 // NewOctaneReloadCmd returns the standalone octane:reload command.
 func NewOctaneReloadCmd() *cobra.Command { return newOctaneReloadCmd("octane:reload") }
 
-// newOctaneReloadCmd toggles Octane auto-reload (octane:start --watch) on or off
+// newOctaneReloadCmd toggles Octane auto-reload (octane:frankenphp --watch) on or off
 // for the current site. With no argument it prints the current state. When
 // toggled it persists the per-project preference and, when the site serves via
 // FrankenPHP worker mode, re-applies the FrankenPHP container so the new
@@ -33,7 +33,7 @@ func NewOctaneReloadCmd() *cobra.Command { return newOctaneReloadCmd("octane:rel
 func newOctaneReloadCmd(use string) *cobra.Command {
 	return &cobra.Command{
 		Use:   use + " [on|off]",
-		Short: "Toggle Octane auto-reload on file changes (octane:start --watch) for the current site",
+		Short: "Toggle Octane auto-reload on file changes (octane:frankenphp --watch) for the current site",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -49,7 +49,7 @@ func newOctaneReloadCmd(use string) *cobra.Command {
 				if config.ProjectReloadsWorker(cwd, "octane") {
 					state = "on"
 				}
-				fmt.Printf("Octane auto-reload (octane:start --watch): %s\n", state)
+				fmt.Printf("Octane auto-reload (octane:frankenphp --watch): %s\n", state)
 				return nil
 			}
 

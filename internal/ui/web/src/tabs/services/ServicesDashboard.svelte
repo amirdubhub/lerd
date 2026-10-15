@@ -6,7 +6,14 @@
   import DashboardSection from '$components/DashboardSection.svelte';
   import InstalledServiceTile from './InstalledServiceTile.svelte';
   import PresetCard from './PresetCard.svelte';
-  import { coreServices, servicesLoaded } from '$stores/services';
+  import UpdateAllModal from './UpdateAllModal.svelte';
+  import {
+    coreServices,
+    servicesLoaded,
+    serviceLabel,
+    type Service,
+    type ServiceUpdateResult
+  } from '$stores/services';
   import { discoverablePresets, presetsLoaded, loadPresets } from '$stores/presets';
   import { openPresetModal } from '$stores/modals';
   import { accessMode } from '$stores/accessMode';
@@ -19,7 +26,21 @@
 
   const running = $derived($coreServices.filter((s) => s.status === 'active').length);
   const total = $derived($coreServices.length);
-  const updates = $derived($coreServices.filter((s) => s.update_available).length);
+  const outdated = $derived($coreServices.filter((s) => s.update_available));
+  const updates = $derived(outdated.length);
+  // Services waiting on an update lead the grid so they are not lost among the rest.
+  const installed = $derived([...outdated, ...$coreServices.filter((s) => !s.update_available)]);
+
+  // A snapshot of what was outdated when the dialog opened, null while it is closed.
+  let updateBatch = $state<Service[] | null>(null);
+  let results = $state<ServiceUpdateResult[]>([]);
+  const updated = $derived(results.filter((r) => r.ok).length);
+  const failed = $derived(results.filter((r) => !r.ok));
+
+  function openUpdateAll() {
+    results = [];
+    updateBatch = [...outdated];
+  }
   const sitesServed = $derived(
     new Set($coreServices.flatMap((s) => s.site_domains ?? [])).size
   );
@@ -28,16 +49,38 @@
 </script>
 
 <div class="flex-1 flex flex-col min-h-0">
-  <DashboardHeader title={m.services_dash_overview()} stats={$servicesLoaded && total > 0 ? summary : undefined} />
+  <DashboardHeader title={m.nav_services()} stats={$servicesLoaded && total > 0 ? summary : undefined} />
 
   <div class="flex-1 min-h-0 overflow-y-auto p-4 space-y-6">
     <section class="space-y-2.5">
-      <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">{m.services_dash_installed()}</h2>
+      <div class="flex items-center justify-between gap-3">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">{m.services_dash_installed()}</h2>
+        {#if $accessMode.localControl && updates > 0}
+          <button
+            onclick={openUpdateAll}
+            disabled={updateBatch !== null}
+            class="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700 disabled:opacity-50 dark:text-emerald-400 dark:hover:text-emerald-300"
+          >
+            <span>↑</span>
+            {m.services_updateAll()}
+          </button>
+        {/if}
+      </div>
+      {#if results.length > 0}
+        <div class="text-xs space-y-0.5">
+          {#if updated > 0}
+            <p class="text-emerald-600 dark:text-emerald-400">{m.services_updateAll_done({ count: updated })}</p>
+          {/if}
+          {#each failed as r (r.name)}
+            <p class="text-red-600 dark:text-red-400">{serviceLabel(r.name)}: {r.error}</p>
+          {/each}
+        </div>
+      {/if}
       {#if $servicesLoaded && total === 0}
         <p class="text-sm text-gray-500 dark:text-gray-400">{m.services_dash_noInstalled()}</p>
       {:else}
         <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
-          {#each $coreServices as svc (svc.name)}
+          {#each installed as svc (svc.name)}
             <InstalledServiceTile {svc} />
           {/each}
         </div>
@@ -75,6 +118,14 @@
     {/if}
   </div>
 </div>
+
+{#if updateBatch}
+  <UpdateAllModal
+    services={updateBatch}
+    onclose={() => (updateBatch = null)}
+    ondone={(r) => (results = r)}
+  />
+{/if}
 
 {#snippet summary()}
   <span class="inline-flex items-center gap-1.5">

@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,5 +131,33 @@ func TestExecDBSnapshotKeep(t *testing.T) {
 	res, _ := execDBSnapshotKeep(map[string]any{"service": "mysql", "database": "shop_db"})
 	if !strings.Contains(toolText(res), "name is required") {
 		t.Errorf("expected a missing-name complaint: %s", toolText(res))
+	}
+}
+
+// A snapshot taken through MCP carries the site and branch like a CLI one, so a
+// branch switch can find the copy taken while that branch was checked out.
+func TestSnapshotMetaFor_recordsSiteAndBranch(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "feature/x"},
+		{"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := config.AddSite(config.Site{Name: "acme", Path: dir, Domains: []string{"acme.test"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := snapshotMetaFor(dir); got.Site != "acme" || got.GitBranch != "feature/x" {
+		t.Errorf("meta = %+v, want site acme on feature/x", got)
+	}
+	if got := snapshotMetaFor(""); got.Site != "" || got.GitBranch != "" {
+		t.Errorf("meta without a path = %+v, want empty", got)
 	}
 }

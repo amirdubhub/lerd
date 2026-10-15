@@ -120,6 +120,11 @@ func launchAgentsDir() string {
 var (
 	launchAgentsDirFn   = launchAgentsDir
 	containerSnapshotFn = func() map[string]bool { return podman.Cache.Snapshot() }
+	containerExistsFn   = podman.ContainerExists
+	removeContainerFn   = func(name string) {
+		podman.Cmd("stop", "-t", "5", name).Run() //nolint:errcheck
+		podman.Cmd("rm", "-f", name).Run()        //nolint:errcheck
+	}
 )
 
 // containerRunning answers "is this unit's container up?" from a snapshot taken
@@ -896,12 +901,11 @@ func runPodmanWithError(args []string) error {
 // needed because container units use -d (detached) + --restart=always, so the
 // container keeps running independently of launchd after the plist is booted out.
 func (m *darwinServiceManager) Stop(name string) error {
-	// Stop and remove the container only if it is actually running.
-	// Skipping the podman calls when the container is absent avoids flooding the
-	// Podman Machine SSH socket with N parallel no-op requests during lerd stop.
-	if running, _ := podman.ContainerRunning(name); running {
-		podman.Cmd("stop", "-t", "5", name).Run() //nolint:errcheck
-		podman.Cmd("rm", "-f", name).Run()        //nolint:errcheck
+	// Remove the container whenever it exists, running or left in Created by a
+	// stop that beat its start. Skipping absent ones avoids flooding the Podman
+	// Machine SSH socket with N parallel no-op requests during lerd stop.
+	if exists, _ := containerExistsFn(name); exists {
+		removeContainerFn(name)
 	}
 
 	domain := uidDomain()

@@ -65,6 +65,24 @@ describe('InstalledServiceTile', () => {
     expect(getByText('↑')).toBeTruthy();
   });
 
+  // The target version sits on the tile itself, so a glance at the grid says
+  // what an update would bring without hovering or opening the service.
+  it('shows the version an update would move to', () => {
+    const { getByText } = render(InstalledServiceTile, {
+      props: { svc: svc({ version: 'v1.27', update_available: true, latest_version: 'v1.28' }) }
+    });
+    expect(getByText('→ v1.28')).toBeTruthy();
+  });
+
+  // A rolling tag updates to a new digest under the same name, where
+  // "latest → latest" would say nothing.
+  it('shows no target for a rolling tag', () => {
+    const { queryByText } = render(InstalledServiceTile, {
+      props: { svc: svc({ version: 'latest', update_available: true, latest_version: 'latest' }) }
+    });
+    expect(queryByText('→ latest')).toBeNull();
+  });
+
   // The tile now wears the preset card's shell so the installed and available
   // sections of the services dashboard read as one grid.
   it('renders the preset card shell with a tinted category icon', () => {

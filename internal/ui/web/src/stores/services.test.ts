@@ -35,6 +35,34 @@ describe('services store', () => {
     expect(urls[0]).toContain('/api/image-estimate');
   });
 
+  // The bulk update is confirmed once up front, so it must not stop on a
+  // download prompt per service, and one failure must not abort the rest.
+  it('updateServices updates each service in turn and reports every result', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      urls.push(u);
+      if (u.includes('/api/services/mysql/update')) {
+        return new Response('{"phase":"error","error":"pull failed"}\n', { status: 200 });
+      }
+      if (u.includes('/update')) return new Response('{"phase":"done"}\n', { status: 200 });
+      return new Response('[]', { status: 200 });
+    }) as unknown as typeof fetch;
+    const { updateServices } = await import('./services');
+
+    const seen: string[] = [];
+    const results = await updateServices(['mysql', 'mailpit'], (r) => seen.push(r.name));
+
+    expect(results).toEqual([
+      { name: 'mysql', ok: false, error: 'pull failed' },
+      { name: 'mailpit', ok: true }
+    ]);
+    expect(seen).toEqual(['mysql', 'mailpit']);
+    expect(urls.some((u) => u.includes('/api/image-estimate'))).toBe(false);
+    const updates = urls.filter((u) => u.endsWith('/update'));
+    expect(updates).toEqual(['/api/services/mysql/update', '/api/services/mailpit/update']);
+  });
+
   it('splits services into core and worker groups', async () => {
     const { services, coreServices, workerGroups } = await import('./services');
     services.set([

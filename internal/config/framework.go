@@ -184,6 +184,9 @@ type FrameworkNginx struct {
 	// Snippet is nginx config with three placeholders expanded before render:
 	// {{root}} (project root), {{public}} (document root), {{fpm}} (FPM container).
 	Snippet string `yaml:"snippet"`
+	// FastCGIParams are added to the site's PHP location, so PHP sees them as
+	// server variables. Values take the {{root}} and {{public}} placeholders.
+	FastCGIParams map[string]string `yaml:"fastcgi_params,omitempty"`
 }
 
 // ValidateNginxSnippet returns nil when s is balanced enough to splice into a
@@ -236,7 +239,7 @@ type FrameworkFrankenPHP struct {
 	// than rewriting WorkerEntrypoint in Go means the store stays the single
 	// source of truth for what runs; core only appends the platform polling
 	// flag on hosts where the container can't observe filesystem events (see
-	// ResolveFrankenPHPWorkerEntrypoint). Laravel sets it to the octane:start
+	// ResolveFrankenPHPWorkerEntrypoint). Laravel sets it to the octane:frankenphp
 	// command with --watch.
 	WorkerReloadEntrypoint []string `yaml:"worker_reload_entrypoint,omitempty"`
 	// SupportsWorker declares whether the framework ships a FrankenPHP worker
@@ -951,6 +954,11 @@ func (e FrameworkEnvConf) appFormat() string {
 	return e.AppFormat
 }
 
+// octaneAdminHostArg binds FrankenPHP's admin API to the container address so octane:reload run
+// from the FPM container reaches it. octane:start does not forward --admin-host, older Octane
+// lacks it (hence the grep), and $ is avoided because systemd and launchd expand it in Exec=.
+const octaneAdminHostArg = "`grep -qs admin-host vendor/laravel/octane/src/Commands/StartFrankenPhpCommand.php && hostname -i | sed 's/ .*//; s/^/--admin-host=/'`"
+
 // laravelFramework is the built-in Laravel adapter, the default shipped stack.
 var laravelFramework = &Framework{
 	Name:      "laravel",
@@ -1115,13 +1123,13 @@ var laravelFramework = &Framework{
 		// `lerd restart`; opting the octane worker into reload (lerd octane:reload
 		// on) selects the watch variant below so the server restarts on changes.
 		WorkerEntrypoint: []string{"sh", "-c",
-			`exec php artisan octane:start --server=frankenphp --host=0.0.0.0 --port=8000 --workers=auto`},
+			`exec php artisan octane:frankenphp --host=0.0.0.0 --port=8000 --workers=auto ` + octaneAdminHostArg},
 		// Watch variant: same command plus --watch. Octane's watcher runs
 		// vendor/laravel/octane/bin/file-watcher.cjs under node (baked into the
 		// image) and resolves the chokidar npm package from the project. Core
 		// appends --poll on hosts where the container can't see host fs events.
 		WorkerReloadEntrypoint: []string{"sh", "-c",
-			`exec php artisan octane:start --server=frankenphp --host=0.0.0.0 --port=8000 --workers=auto --watch`},
+			`exec php artisan octane:frankenphp --host=0.0.0.0 --port=8000 --workers=auto --watch ` + octaneAdminHostArg},
 		SupportsWorker: true,
 	},
 	Commands: []FrameworkCommand{
@@ -1462,7 +1470,7 @@ func mergeBuiltinDoctor(fw *Framework) *Framework {
 }
 
 // mergeUserOverlay checks for a user-defined overlay file in FrameworksDir()
-// and merges its workers and setup commands on top of base.
+// and merges its workers, setup, logs, nginx block and requires on top of base.
 // User additions/overrides win. If no overlay exists, base is returned as-is.
 func mergeUserOverlay(base *Framework) *Framework {
 	path := filepath.Join(FrameworksDir(), base.Name+".yaml")
@@ -1491,6 +1499,17 @@ func mergeUserOverlay(base *Framework) *Framework {
 	// Merge logs (overlay replaces the full list if provided).
 	if overlay.Logs != nil {
 		base.Logs = overlay.Logs
+	}
+
+	// The overlay is the user's own file, so unlike a project's .lerd.yaml its
+	// nginx block and required services are trusted; each replaces the base's.
+	if overlay.Nginx != nil {
+		base.Nginx = overlay.Nginx
+	}
+	// An empty list counts as unset: SaveFramework's omitempty drops it, so
+	// honouring it here would make the overlay mean something else once resaved.
+	if len(overlay.Requires) > 0 {
+		base.Requires = overlay.Requires
 	}
 
 	return base
@@ -2255,8 +2274,8 @@ func SaveFramework(fw *Framework) error {
 	}
 	toSave := fw
 	if fw.Name == "laravel" {
-		// Only persist workers, setup, and logs — built-in handles everything else
-		toSave = &Framework{Name: fw.Name, Workers: fw.Workers, Setup: fw.Setup, Logs: fw.Logs}
+		// Only persist what mergeUserOverlay reads; the base handles everything else.
+		toSave = &Framework{Name: fw.Name, Workers: fw.Workers, Setup: fw.Setup, Logs: fw.Logs, Nginx: fw.Nginx, Requires: fw.Requires}
 	}
 	data, err := yaml.Marshal(toSave)
 	if err != nil {

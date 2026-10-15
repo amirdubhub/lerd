@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,8 +60,10 @@ func handleLSPPhp(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, phpantom.BinPath())
-	cmd.Dir = root
+	cmd, err := phpantom.Command(ctx, root)
+	if err != nil {
+		return
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return

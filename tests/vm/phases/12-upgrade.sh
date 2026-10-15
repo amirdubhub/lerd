@@ -8,16 +8,17 @@ source "$(dirname "$0")/../lib.sh"
 # Installing an older release rebuilds its own images; free the throwaway
 # projects and unused images of the phases before so a small disk has room.
 for d in vmworkers natvm natmob vmhz drupvm wpvm ci3 ci4 shop sailapp ccapp plainsite "space dir"; do
-	[ -d "$PROJECTS/$d" ] && (cd "$PROJECTS/$d" && lerd unlink </dev/null >/dev/null 2>&1) && rm -rf "${PROJECTS:?}/$d"
+	# Drupal leaves sites/default read-only, which rm -rf cannot clear.
+	[ -d "$PROJECTS/$d" ] && (cd "$PROJECTS/$d" && lerd unlink </dev/null >/dev/null 2>&1) && chmod -R u+w "${PROJECTS:?}/$d" && rm -rf "${PROJECTS:?}/$d"
 done
 reclaim
 
 if [ -n "${FROM_VERSION:-}" ]; then
 	arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 	mkdir -p "$HOME/from" && cd "$HOME/from" || exit 1
-	curl -fsSLO "https://github.com/lerd-env/lerd/releases/download/v$FROM_VERSION/lerd_${FROM_VERSION}_linux_$arch.tar.gz"
+	curl -fsSLO --retry 3 --retry-all-errors "https://github.com/lerd-env/lerd/releases/download/v$FROM_VERSION/lerd_${FROM_VERSION}_linux_$arch.tar.gz"
 	tar xzf "lerd_${FROM_VERSION}_linux_$arch.tar.gz"
-	curl -fsSL "https://raw.githubusercontent.com/lerd-env/lerd/v$FROM_VERSION/install.sh" -o install.sh
+	curl -fsSL --retry 3 --retry-all-errors "https://raw.githubusercontent.com/lerd-env/lerd/v$FROM_VERSION/install.sh" -o install.sh
 	check "install $FROM_VERSION" bash install.sh --local "$HOME/from/lerd"
 	cd "$HOME" || exit 1
 fi

@@ -91,3 +91,13 @@ func StripeSecretSet(sitePath string) bool {
 	_, v := ResolveStripeSecret(sitePath)
 	return v != ""
 }
+
+// RequireStripeSecretInEnv refuses a secret_env_key with no value in .env:
+// pinning it would hide the UI's Stripe control, leaving no way back from the
+// UI. An empty key (keep auto-detection) always passes.
+func RequireStripeSecretInEnv(sitePath, key string) error {
+	if key == "" || envfile.ReadKey(filepath.Join(sitePath, ".env"), key) != "" {
+		return nil
+	}
+	return fmt.Errorf("%s has no value in .env", key)
+}

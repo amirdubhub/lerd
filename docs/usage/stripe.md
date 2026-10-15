@@ -109,7 +109,7 @@ These flags apply to `stripe:listen`; `stripe:config` accepts `--path` and `--se
 
 ### Web UI
 
-When a Stripe secret is detected in a site's `.env` (under any of the recognised keys), a **Stripe** toggle appears in the site detail panel alongside HTTPS and Queue. Toggling it starts or stops the listener. A gear next to the toggle opens a small modal for setting the webhook route, mirroring the Horizon control. While running:
+When a Stripe secret is detected in a site's `.env` (under any of the recognised keys), a **Stripe** toggle appears in the site detail panel alongside HTTPS and Queue. Toggling it starts or stops the listener. A gear next to the toggle opens a small modal for setting the webhook route and the `.env` key that holds the secret, mirroring the Horizon control. The key field is prefilled with the detected key; saving a key that has no value in `.env` is refused, since that would hide the control. While running:
 
 - A violet dot appears next to the site in the sidebar.
 - A **Stripe** log tab opens automatically beside PHP-FPM and Queue.

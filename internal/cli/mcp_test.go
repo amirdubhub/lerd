@@ -670,7 +670,10 @@ func TestLerdReference_underSizeCeiling(t *testing.T) {
 	// 37600 → 38150 for what 1.37 leaves an assistant to misread: secrets an
 	// env_provider keeps out of .env on purpose, a sleeping service that wakes
 	// on its own, and front_controller in place of a hand-written override.
-	const ceiling = 38150
+	//
+	// 38150 → 38300 for fastcgi_params, which keeps a framework-wide param in
+	// its definition rather than in a per-site location override.
+	const ceiling = 38300
 	if got := len(lerdReference); got > ceiling {
 		t.Errorf("lerd-reference.md is %d bytes, ceiling is %d — trim before raising", got, ceiling)
 	}
@@ -687,5 +690,32 @@ func TestSkillDescription_mentionsBrowserErrors(t *testing.T) {
 		if !strings.Contains(d, "JavaScript errors") || !strings.Contains(d, "console warnings") {
 			t.Errorf("%s description should name JavaScript errors and console warnings so a broken page loads the skill", name)
 		}
+	}
+}
+
+func TestGlobalAISkills_followClaudeConfigDir(t *testing.T) {
+	home := t.TempDir()
+	profile := filepath.Join(home, ".claude-work")
+	t.Setenv("CLAUDE_CONFIG_DIR", profile)
+	skill := filepath.Join(profile, "skills", "lerd", "SKILL.md")
+
+	if err := WriteGlobalAISkills(home, false); err != nil {
+		t.Fatalf("WriteGlobalAISkills: %v", err)
+	}
+	if _, err := os.Stat(skill); err != nil {
+		t.Fatalf("skill not written under CLAUDE_CONFIG_DIR: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude")); !os.IsNotExist(err) {
+		t.Errorf("~/.claude was written although CLAUDE_CONFIG_DIR is set (err=%v)", err)
+	}
+	if !MCPGlobalConfigured(home) {
+		t.Error("MCPGlobalConfigured misses the skill under CLAUDE_CONFIG_DIR")
+	}
+
+	if err := RemoveGlobalAISkills(home, false); err != nil {
+		t.Fatalf("RemoveGlobalAISkills: %v", err)
+	}
+	if _, err := os.Stat(skill); !os.IsNotExist(err) {
+		t.Errorf("skill under CLAUDE_CONFIG_DIR not removed (err=%v)", err)
 	}
 }

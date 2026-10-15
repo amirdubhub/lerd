@@ -216,3 +216,66 @@ func TestSSLVhostRendersFrameworkNginx(t *testing.T) {
 		t.Fatalf("media=%d slash=%d\n%s", iMedia, iSlash, out)
 	}
 }
+
+// A framework's fastcgi params reach PHP as server variables, which is how a
+// Testbench skeleton finds the package it serves: {{root}} expands to the
+// quoted project path, and the params come out sorted so a regeneration is stable.
+func TestFrameworkFastCGIParams(t *testing.T) {
+	var buf bytes.Buffer
+	got := frameworkFastCGIParams(&buf, "testbench", "pkg.test", map[string]string{
+		"TESTBENCH_WORKING_PATH": "{{root}}",
+		"APP_PUBLIC":             "{{public}}",
+	}, "/home/u/my pkg", "vendor/laravel/public")
+	want := "        fastcgi_param APP_PUBLIC \"/home/u/my pkg/vendor/laravel/public\";\n" +
+		"        fastcgi_param TESTBENCH_WORKING_PATH \"/home/u/my pkg\";\n"
+	if got != want || buf.Len() != 0 {
+		t.Fatalf("got %q (warned %q), want %q", got, buf.String(), want)
+	}
+}
+
+// A param that could break out of its directive is dropped with a warning, and
+// the rest still render.
+func TestFrameworkFastCGIParamsDropsHostileEntries(t *testing.T) {
+	for name, tc := range map[string]struct {
+		params map[string]string
+		path   string
+	}{
+		"bad name":            {map[string]string{"A;B": "x"}, "/p"},
+		"bad value":           {map[string]string{"A": "x;y"}, "/p"},
+		"unknown placeholder": {map[string]string{"A": "{{roots}}"}, "/p"},
+		"nginx variable":      {map[string]string{"A": "$price"}, "/p"},
+		"hostile path":        {map[string]string{"A": "{{root}}"}, "/p;q"},
+	} {
+		var buf bytes.Buffer
+		params := map[string]string{"OK": "1"}
+		for k, v := range tc.params {
+			params[k] = v
+		}
+		got := frameworkFastCGIParams(&buf, "fw", "a.test", params, tc.path, "public")
+		if got != "        fastcgi_param OK \"1\";\n" {
+			t.Errorf("%s: got %q", name, got)
+		}
+		if !strings.Contains(buf.String(), "[WARN]") || !strings.Contains(buf.String(), "a.test") {
+			t.Errorf("%s: drop was silent: %q", name, buf.String())
+		}
+	}
+}
+
+// The params belong in the PHP location, after lerd's own, on both vhosts.
+func TestVhostRendersFrameworkFastCGIInPHPLocation(t *testing.T) {
+	line := "        fastcgi_param TESTBENCH_WORKING_PATH \"/home/u/pkg\";\n"
+	for _, tmpl := range []string{"vhost.conf.tmpl", "vhost-ssl.conf.tmpl"} {
+		out := renderVhostForTest(t, tmpl, VhostData{
+			Domain: "pkg.test", ServerNames: "pkg.test", Path: "/home/u/pkg", PublicDir: "public",
+			CertDomain: "pkg.test", FPMContainer: "f", RequestTimeout: 60, LerdSite: "pkg",
+			FrameworkFastCGI: line,
+		})
+		iPHP := strings.Index(out, `location ~ \.php$`)
+		iSite := strings.Index(out, "fastcgi_param LERD_SITE pkg;")
+		iParam := strings.Index(out, strings.TrimSpace(line))
+		iInclude := strings.Index(out, "custom.d/pkg.test.location.conf")
+		if iParam < 0 || !(iPHP < iSite && iSite < iParam && iParam < iInclude) {
+			t.Fatalf("%s: php=%d site=%d param=%d include=%d\n%s", tmpl, iPHP, iSite, iParam, iInclude, out)
+		}
+	}
+}

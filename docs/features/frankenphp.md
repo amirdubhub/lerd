@@ -52,7 +52,7 @@ Each framework can declare how to launch FrankenPHP via a `frankenphp:` block in
 **Laravel** has two modes:
 
 - **Non-worker (`runtime_worker: false`, default)**: lerd runs `frankenphp php-server -r public/`. Each request boots Laravel from scratch; code edits take effect on the next request, same as FPM. You still get FrankenPHP's HTTP/2, HTTP/3, and TLS, but not Octane's per-request speedup.
-- **Worker (`runtime_worker: true`)**: lerd runs `php artisan octane:start --server=frankenphp --host=0.0.0.0 --port=8000 --workers=auto`. Octane keeps Laravel resident; requests skip the full bootstrap. Octane registers Symfony Console signal handlers which need the `pcntl` PHP extension; it is baked into lerd's derived FrankenPHP image (see the Extensions section) so the container boots straight into Octane. Worker mode therefore needs `laravel/octane` in the project: lerd refuses the switch when the package is not installed, rather than starting a container that exits on its first command.
+- **Worker (`runtime_worker: true`)**: lerd runs `php artisan octane:frankenphp --host=0.0.0.0 --port=8000 --workers=auto`, with the admin API bound to the container's network address so `lerd php artisan octane:reload` and `octane:status` reach the server from the CLI. Octane keeps Laravel resident; requests skip the full bootstrap. Octane registers Symfony Console signal handlers which need the `pcntl` PHP extension; it is baked into lerd's derived FrankenPHP image (see the Extensions section) so the container boots straight into Octane. Worker mode therefore needs `laravel/octane` in the project: lerd refuses the switch when the package is not installed, rather than starting a container that exits on its first command.
 
 **Symfony** uses FrankenPHP's native worker flag:
 
@@ -121,12 +121,12 @@ Worker mode keeps PHP resident, so a source file change is **not** picked up on 
 
   ```bash
   cd ~/Code/my-app
-  lerd octane:reload on    # serve via octane:start --watch
+  lerd octane:reload on    # serve via octane:frankenphp --watch
   lerd octane:reload off   # back to standard worker mode
   lerd octane:reload       # print the current state
   ```
 
-  When on, lerd serves the site with `octane:start --watch` so edits restart the resident workers within a second or two. The toggle is also a refresh button next to the **Octane** segment in the Web UI site controls. Two prerequisites are handled for you:
+  When on, lerd serves the site with `octane:frankenphp --watch` so edits restart the resident workers within a second or two. The toggle is also a refresh button next to the **Octane** segment in the Web UI site controls. Two prerequisites are handled for you:
 
   - Octane's file watcher runs under `node` and resolves `chokidar` from the project. Reload-on stays off until `chokidar` is installed; the CLI and the Web UI both offer a one-click `npm install -D chokidar` (Vite 8 no longer ships it transitively). Node is baked into lerd's derived FrankenPHP image, so the watcher works without an install step at boot.
   - On macOS (and WSL2 `/mnt` projects) the container can't observe host filesystem events, so lerd appends `--poll` automatically.

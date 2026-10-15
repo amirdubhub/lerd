@@ -93,6 +93,16 @@ func WatchWorktrees(
 		return addWorktreesWatch(sitePath)
 	}
 
+	forgetSite := func(sitePath string) {
+		for _, m := range []map[string]string{siteForGitDir, siteForWorktreesDir, siteForEntryDir} {
+			for k, v := range m {
+				if v == sitePath {
+					delete(m, k)
+				}
+			}
+		}
+	}
+
 	// Worktrees present at start are the daemon's boot pass to handle.
 	for _, sitePath := range getSites() {
 		addSite(sitePath)
@@ -116,6 +126,13 @@ func WatchWorktrees(
 			if !ok {
 				return nil
 			}
+			// The repository itself was deleted or moved: its watches are gone, so
+			// forget the site and let the next poll watch whatever replaces it.
+			if sitePath, known := siteForGitDir[event.Name]; known && event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+				forgetSite(sitePath)
+				continue
+			}
+
 			dir := filepath.Dir(event.Name)
 
 			// Event inside .git/ — watch for worktrees/ being (re-)created.
