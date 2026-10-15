@@ -181,9 +181,11 @@ func replaceRunningExe(path string, exe []byte) error {
 }
 
 // agentHandOverScript drops the agent's own Run entry, which an install from
-// before the desktop app left behind.
+// before the desktop app left behind. It checks first: a Remove-ItemProperty
+// that finds nothing fails, and even silenced it fails the script.
 func agentHandOverScript() string {
-	return `Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'lerd' -ErrorAction SilentlyContinue`
+	return `$k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if (Get-ItemProperty -Path $k -Name 'lerd' -ErrorAction SilentlyContinue) { Remove-ItemProperty -Path $k -Name 'lerd' }`
 }
 
 // agentRunValue is the HKCU Run entry. conhost --headless keeps the agent from

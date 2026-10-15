@@ -77,8 +77,14 @@ func TestWindowsDriveWarning(t *testing.T) {
 // keep a Run entry starting a second one.
 func TestAgentHandOverScript_DropsTheAgentRunEntry(t *testing.T) {
 	got := agentHandOverScript()
-	if !strings.Contains(got, `Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'lerd'`) {
+	if !strings.Contains(got, `$k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'`) ||
+		!strings.Contains(got, `Remove-ItemProperty -Path $k -Name 'lerd'`) {
 		t.Errorf("the hand-over must drop the agent's Run entry:\n%s", got)
+	}
+	// A fresh install has no entry to drop, and a bare Remove-ItemProperty
+	// would fail the script for it, silenced or not.
+	if !strings.Contains(got, `if (Get-ItemProperty -Path $k -Name 'lerd' -ErrorAction SilentlyContinue)`) {
+		t.Errorf("the hand-over must only drop an entry that is there:\n%s", got)
 	}
 	if strings.Contains(got, "conhost") || strings.Contains(got, "Start-Process") {
 		t.Errorf("the hand-over must not start the agent itself:\n%s", got)
