@@ -203,3 +203,42 @@ func TestReadSnapshot_DownWhenStatusFails(t *testing.T) {
 		t.Errorf("snapshot = %+v, settings read = %v; want a stopped lerd and no settings read", snap, read)
 	}
 }
+
+func TestOffOn_FlipsState(t *testing.T) {
+	if offOn(true) != "off" || offOn(false) != "on" {
+		t.Errorf("offOn(true), offOn(false) = %q, %q; want off, on", offOn(true), offOn(false))
+	}
+}
+
+func TestActionMessage(t *testing.T) {
+	fail := errors.New("exit status 1")
+	cases := []struct {
+		args        []string
+		err         error
+		stderr      string
+		title, body string
+		show        bool
+	}{
+		{[]string{"start"}, nil, "", "Lerd started", "", true},
+		{[]string{"stop"}, nil, "", "Lerd stopped", "", true},
+		{[]string{"quit"}, nil, "", "Lerd stopped", "", true},
+		{[]string{"service", "start", "mailpit"}, nil, "", "mailpit started", "", true},
+		{[]string{"use", "8.4"}, nil, "", "PHP 8.4 is the default", "", true},
+		{[]string{"autostart", "enable"}, nil, "", "Autostart on", "", true},
+		{[]string{"lan", "unexpose"}, nil, "", "LAN access off", "", true},
+		{[]string{"lan", "services", "on"}, nil, "", "Services on the LAN on", "", true},
+		{[]string{"dump", "off"}, nil, "", "Dumps off", "", true},
+		{[]string{"notify", "on"}, nil, "", "Notifications on", "", true},
+		{[]string{"tray", "icon", "high-contrast"}, nil, "", "Tray icon: high-contrast", "", true},
+		{[]string{"dashboard"}, nil, "", "", "", false},
+		{[]string{"dashboard"}, fail, "", "Couldn't open the dashboard", "exit status 1", true},
+		{[]string{"service", "start", "redis"}, fail, "pulling image\nError: port 6379 in use\n\n", "Couldn't start redis", "Error: port 6379 in use", true},
+		{[]string{"frobnicate"}, nil, "", "lerd frobnicate done", "", true},
+	}
+	for _, c := range cases {
+		title, body, show := ActionMessage(c.args, c.err, c.stderr)
+		if title != c.title || body != c.body || show != c.show {
+			t.Errorf("ActionMessage(%v, %v) = %q, %q, %v; want %q, %q, %v", c.args, c.err, title, body, show, c.title, c.body, c.show)
+		}
+	}
+}

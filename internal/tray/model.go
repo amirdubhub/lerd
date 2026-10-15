@@ -181,7 +181,7 @@ type MenuItem struct {
 
 // MenuOptions are the parts of the menu that depend on where lerd runs.
 type MenuOptions struct {
-	LANToggle bool // see hasLANToggle
+	LANToggle bool // false on macOS, where gvproxy always exposes ports 80/443
 }
 
 // ActionUpdate opens a terminal running `lerd update` rather than a command.

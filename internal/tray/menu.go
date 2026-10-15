@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/getlantern/systray"
+
+	"github.com/geodro/lerd/internal/platform"
 )
 
 const (
@@ -44,13 +46,13 @@ func buildMenu(mono bool) *menuState {
 	m := &menuState{}
 
 	m.mStatus = systray.AddMenuItem("⏳ Checking...", "")
-	disableInfoItem(m.mStatus)
+	m.mStatus.Disable()
 	m.mNginx = systray.AddMenuItem("  🔴 nginx", "")
-	disableInfoItem(m.mNginx)
+	m.mNginx.Disable()
 	m.mDNS = systray.AddMenuItem("  🔴 dns", "")
-	disableInfoItem(m.mDNS)
+	m.mDNS.Disable()
 	m.mWorkers = systray.AddMenuItem("", "")
-	disableInfoItem(m.mWorkers)
+	m.mWorkers.Disable()
 	m.mWorkers.Hide()
 
 	systray.AddSeparator()
@@ -69,7 +71,9 @@ func buildMenu(mono bool) *menuState {
 
 	m.mSettings = systray.AddMenuItem("Settings", "Lerd settings")
 	m.mAutostart = m.mSettings.AddSubMenuItem("Autostart at login: Off", "Toggle lerd autostart on login")
-	if hasLANToggle() {
+	// LAN exposure toggle is not shown on macOS — ports 80/443 are always
+	// reachable on the LAN via gvproxy; only non-privileged ports support IP binding.
+	if !platform.Current.UsesMachineVM {
 		m.mLAN = m.mSettings.AddSubMenuItem("Expose to LAN: Off", "Toggle whether lerd is reachable from other devices on the local network")
 	}
 	m.mLANServices = m.mSettings.AddSubMenuItem("Managed service LAN access: Off", "Allow remote access to managed service ports on trusted networks")
@@ -82,10 +86,7 @@ func buildMenu(mono bool) *menuState {
 	}
 	// One-way on purpose: once the applet is gone there is no menu left to
 	// toggle it back from, so `lerd tray on` and the dashboard own the return.
-	// A resident tray is always on.
-	if !resident {
-		m.mTrayOff = m.mSettings.AddSubMenuItem("Turn off system tray", "Quit the tray applet and stop lerd from launching it again")
-	}
+	m.mTrayOff = m.mSettings.AddSubMenuItem("Turn off system tray", "Quit the tray applet and stop lerd from launching it again")
 
 	m.mUpdate = systray.AddMenuItem("Check for update...", "Check for a newer version of Lerd")
 	m.mQuit = systray.AddMenuItem("Quit Lerd", "Stop all Lerd processes and containers")
@@ -170,22 +171,22 @@ func (m *menuState) apply(snap *Snapshot) {
 	}
 
 	if snap.Running {
-		setItemTitle(m.mStatus, "🟢 Running")
+		m.mStatus.SetTitle("🟢 Running")
 		m.mToggle.SetTitle("Stop Lerd")
 	} else {
-		setItemTitle(m.mStatus, "🔴 Stopped")
+		m.mStatus.SetTitle("🔴 Stopped")
 		m.mToggle.SetTitle("Start Lerd")
 	}
 
-	setItemTitle(m.mNginx, fmt.Sprintf("  %s nginx", statusDot(snap.NginxRunning)))
+	m.mNginx.SetTitle(fmt.Sprintf("  %s nginx", statusDot(snap.NginxRunning)))
 
-	setItemTitle(m.mDNS, "  "+dotted(dnsItem(snap)))
+	m.mDNS.SetTitle("  " + dotted(dnsItem(snap)))
 
 	// The worker count comes from the services call too, so both lines wait for
 	// a poll that actually read it rather than redrawing from a blank.
 	if snap.ServicesKnown {
 		if title, show := workersTitle(snap); show {
-			setItemTitle(m.mWorkers, title)
+			m.mWorkers.SetTitle(title)
 			m.mWorkers.Show()
 		} else {
 			m.mWorkers.Hide()

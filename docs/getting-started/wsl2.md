@@ -20,7 +20,7 @@ Download `lerd-setup.exe` from the [latest release](https://github.com/lerd-env/
 2. Installs WSL from Microsoft's GitHub release, then an Ubuntu 24.04 distro.
 3. Creates your Linux user (it suggests your Windows name) and asks you to choose its password, which `sudo` asks for later.
 4. Runs lerd's normal installer inside the distro, then `lerd wsl:setup`.
-5. Restarts WSL and opens the dashboard in your browser. The lerd tray icon appears in the Windows notification area and starts with Windows from then on.
+5. Restarts WSL and opens the dashboard in your browser.
 
 Every step checks before it acts, so running it again after a failure picks up where it stopped. Windows shows a certificate warning when lerd's local CA is trusted, answer Yes.
 
@@ -30,10 +30,10 @@ Every step checks before it acts, so running it again after a failure picks up w
 
 - **`lerd` in any Windows terminal.** `lerd.exe` in `%LOCALAPPDATA%\lerd\bin`, on your PATH, runs lerd inside the distro from the folder you are in, including a project opened through `\\wsl.localhost\...`. Windows paths in its arguments, such as `C:\work\app` or `--configuration=\\wsl.localhost\Ubuntu\home\you\app\phpunit.xml`, are translated to the paths the distro sees.
 - **`php`, `composer`, `node` and lerd's other shims.** `php.exe`, `composer.exe` and so on sit beside `lerd.exe` and run the same shim as inside the distro, so a Windows IDE can point its PHP interpreter, Composer or Node at them. They are rewritten on each `lerd wsl:setup`, so run it again after enabling a new shim.
-- **lerd at login.** A background agent starts with Windows and boots the distro, so sites and the dashboard are up without a WSL window open. WSL's idle timeout is switched off in `%USERPROFILE%\.wslconfig`, which otherwise stops the distro, and every container with it, seconds after the last terminal closes. If the distro stops anyway, after a `wsl --shutdown`, a `wsl --update` or a crash, the agent boots it again the next time a Windows app looks up a site, so the page loads after a few seconds instead of failing to connect. The same agent shows the lerd tray icon.
+- **lerd at login.** A background agent starts with Windows and boots the distro, so sites and the dashboard are up without a WSL window open. WSL's idle timeout is switched off in `%USERPROFILE%\.wslconfig`, which otherwise stops the distro, and every container with it, seconds after the last terminal closes. If the distro stops anyway, after a `wsl --shutdown`, a `wsl --update` or a crash, the agent boots it again the next time a Windows app looks up a site, so the page loads after a few seconds instead of failing to connect.
 - **`.test` in Windows browsers, wildcards included.** The agent answers DNS for your site TLD on `127.0.0.1`, and a Windows DNS rule (NRPT) sends the TLD there. It is the one step that needs administrator rights. Answering DNS rather than writing hosts file lines is what keeps `*.branch.site.test` worktree domains working.
 - **HTTPS trusted by Windows browsers.** lerd's local CA is imported into your Windows user's trust store.
-- **Mirrored networking**, so Windows reaches WSL's loopback, plus systemd, the Podman `events_logger` fix and the Linux tray turned off in favour of the Windows one, covered below.
+- **Mirrored networking**, so Windows reaches WSL's loopback, plus systemd, the Podman `events_logger` fix and the Linux tray turned off, covered below.
 
 It is idempotent, so run it again whenever something drifts. `lerd doctor` adds a `[WSL2]` section that re-checks the Linux side on demand.
 
@@ -190,9 +190,9 @@ cp "$(~/.local/share/lerd/bin/mkcert -CAROOT)/rootCA.pem" /mnt/c/Users/$USER/Des
 
 Double-click `lerd-rootCA.crt`, pick **Place all certificates in the following store**, choose **Trusted Root Certification Authorities**, finish, and restart the browser.
 
-## 7. The tray lives on the Windows side
+## 7. The tray lives in the Windows desktop app
 
-`lerd-tray` needs a graphical tray host implementing the `StatusNotifierItem` or `AppIndicator` protocol, and WSL2 does not provide one, so lerd disables it inside WSL. The tray runs in Windows instead, inside the `lerd.exe` agent that `lerd wsl:setup` starts at login. It shows the same menu as on Linux: status, start and stop, services, PHP version and settings. It reads lerd's state from `http://127.0.0.1:7073` and runs every action inside the distro through `wsl.exe`. Each action confirms itself with a silent Lerd toast when it works, and with a toast carrying lerd's error when it fails. **Open Dashboard** and `lerd dashboard` open the dashboard as an app when you installed it as one from Edge, Chrome, Vivaldi or Brave, and in your default browser otherwise. It is always on, so the menu has no entry to turn it off, and **Quit Lerd** stops lerd but keeps the icon so you can start it again.
+`lerd-tray` needs a graphical tray host implementing the `StatusNotifierItem` or `AppIndicator` protocol, and WSL2 does not provide one, so lerd disables it inside WSL. On Windows the tray belongs to the Lerd desktop app, which draws the menu the dashboard serves at `http://127.0.0.1:7073/api/tray` (see [Drawing the menu elsewhere](../features/system-tray.md#drawing-the-menu-elsewhere)). Without it, the CLI and the dashboard cover everything. **Open Dashboard** and `lerd dashboard` open the dashboard as an app when you installed it as one from Edge, Chrome, Vivaldi or Brave, and in your default browser otherwise.
 
 ## 8. Notifications
 

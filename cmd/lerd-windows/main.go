@@ -63,18 +63,12 @@ func main() {
 		f, err := os.OpenFile(filepath.Join(dir, "lerd-agent.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err == nil {
 			log.SetOutput(f)
-			// The headless console drops stderr; the tray library and a panic write there.
+			// The headless console drops stderr, where a panic writes.
 			redirectStderr(f)
 		}
-		go func() {
-			if err := agent(cfg, filepath.Join(dir, winshim.ConfigName)); err != nil {
-				log.Print(err)
-			}
-			quitTray()
-		}()
-		log.Print("tray starting")
-		runTray(cfg)
-		log.Print("tray stopped")
+		if err := agent(cfg, filepath.Join(dir, winshim.ConfigName)); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 	os.Exit(runInDistro(winshim.WSLArgs(cfg, cwd, os.Args[1:])))
@@ -94,8 +88,7 @@ func runInDistro(wslArgs []string) int {
 	return 0
 }
 
-// agent boots the distro and answers DNS for the site TLD while the tray runs
-// on the main goroutine. It returns once its config file is removed or
+// agent boots the distro and answers DNS for the site TLD. It returns once its config file is removed or
 // rewritten, which is how uninstall and a rerun of wsl:setup stop it: the
 // installer may have started it elevated, and an unelevated lerd is not
 // allowed to kill that.

@@ -70,7 +70,7 @@ func (l *menuList) set(rows []row) int {
 			item.Hide()
 			continue
 		}
-		setItemTitle(item, rows[i].title)
+		item.SetTitle(rows[i].title)
 		item.SetTooltip(rows[i].tooltip)
 		if rows[i].disabled {
 			item.Disable()
@@ -89,7 +89,7 @@ func (l *menuList) watch(refresh func()) {
 		go func(idx int) {
 			for range l.items[idx].ClickedCh {
 				if args := l.argsAt(idx); len(args) > 0 {
-					runAction(refresh, args...)
+					runAndRefresh(lerdCmd(args...), refresh)
 				}
 			}
 		}(i)
