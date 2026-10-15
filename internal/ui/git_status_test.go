@@ -411,8 +411,8 @@ func TestHandleSiteGitDiff(t *testing.T) {
 		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = get("domain=acme.test&path=" + url.QueryEscape(main) + "&section=unstaged&file=a.php")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `+changed`) {
-		t.Fatalf("patch: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"original":"a\n","modified":"changed\n"`) {
+		t.Fatalf("versions: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := get("domain=acme.test&path=" + url.QueryEscape(t.TempDir())); rec.Code != http.StatusBadRequest {
 		t.Errorf("foreign path: got %d", rec.Code)

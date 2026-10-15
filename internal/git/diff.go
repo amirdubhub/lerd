@@ -2,9 +2,9 @@ package git
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -15,8 +15,8 @@ const (
 	SectionUntracked = "untracked"
 )
 
-// maxPatchBytes keeps one generated or minified file from flooding the browser.
-const maxPatchBytes = 512 << 10
+// maxVersionBytes is the most of one side of a file the dashboard's editor is handed.
+const maxVersionBytes = 1 << 20
 
 // ChangedFile is one path with git's status letter (A, M, D, T, U, or ? for untracked).
 type ChangedFile struct {
@@ -29,12 +29,6 @@ type Changes struct {
 	Staged    []ChangedFile `json:"staged"`
 	Unstaged  []ChangedFile `json:"unstaged"`
 	Untracked []ChangedFile `json:"untracked"`
-}
-
-// Patch is one file's unified diff; Truncated means it was cut at maxPatchBytes.
-type Patch struct {
-	Patch     string `json:"patch"`
-	Truncated bool   `json:"truncated"`
 }
 
 // ReadChanges lists the files in each section of dir's uncommitted work.
@@ -90,43 +84,63 @@ func nameStatus(dir string, args ...string) ([]ChangedFile, error) {
 	return files, nil
 }
 
-// FilePatch is the diff of one file in section, ignoring whitespace changes when
-// asked. The path must be one git lists there: an untracked diff reads the file
-// as given, so anything else is refused.
-func FilePatch(dir, section, path string, ignoreSpace bool) (Patch, error) {
+// Versions are a file's two sides in a section, for a side-by-side editor.
+// Binary and TooLarge leave both sides empty; a side the file is missing from is "".
+type Versions struct {
+	Original string `json:"original"`
+	Modified string `json:"modified"`
+	Binary   bool   `json:"binary"`
+	TooLarge bool   `json:"too_large"`
+}
+
+// FileVersions reads both sides of a file in section: staged compares HEAD with
+// the index, unstaged the index with the working tree, untracked nothing with it.
+func FileVersions(dir, section, path string) (Versions, error) {
 	files, err := sectionFiles(dir, section)
 	if err != nil {
-		return Patch{}, err
+		return Versions{}, err
 	}
 	if !listed(files, path) {
-		return Patch{}, fmt.Errorf("%q has no %s changes", path, section)
+		return Versions{}, fmt.Errorf("%q has no %s changes", path, section)
 	}
-	// A repo's own diff.external or textconv driver must not run from the dashboard.
-	args := []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames"}
-	if ignoreSpace {
-		args = append(args, "--ignore-all-space")
-	}
+	var original, modified []byte
 	switch section {
 	case SectionStaged:
-		args = append(args, "--cached", "--", path)
+		original, modified = blob(dir, "HEAD:"+path), blob(dir, ":"+path)
 	case SectionUnstaged:
-		args = append(args, "--", path)
+		original, modified = blob(dir, ":"+path), workingFile(dir, path)
 	case SectionUntracked:
-		args = append(args, "--no-index", "--", "/dev/null", path)
+		modified = workingFile(dir, path)
 	}
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	// --no-index exits 1 when the files differ, which for an untracked file they always do.
-	var exit *exec.ExitError
-	if err != nil && !(section == SectionUntracked && errors.As(err, &exit) && exit.ExitCode() == 1) {
-		return Patch{}, fmt.Errorf("git diff %s: %w", path, err)
+	if len(original) > maxVersionBytes || len(modified) > maxVersionBytes {
+		return Versions{TooLarge: true}, nil
 	}
-	if len(out) > maxPatchBytes {
-		cut := bytes.LastIndexByte(out[:maxPatchBytes], '\n') + 1
-		return Patch{Patch: string(out[:cut]), Truncated: true}, nil
+	if bytes.IndexByte(original, 0) >= 0 || bytes.IndexByte(modified, 0) >= 0 {
+		return Versions{Binary: true}, nil
 	}
-	return Patch{Patch: string(out)}, nil
+	return Versions{Original: string(original), Modified: string(modified)}, nil
+}
+
+// blob is the object at spec, or nil where the file is not on that side
+// (added, deleted, or no commit yet).
+func blob(dir, spec string) []byte {
+	out, err := Output(dir, "cat-file", "blob", spec)
+	if err != nil {
+		return nil
+	}
+	return []byte(out)
+}
+
+// workingFile reads a symlink as its target path, the way git stores it, so a
+// link never hands the dashboard a file outside the checkout.
+func workingFile(dir, path string) []byte {
+	full := filepath.Join(dir, path)
+	if fi, err := os.Lstat(full); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(full)
+		return []byte(target)
+	}
+	b, _ := os.ReadFile(full)
+	return b
 }
 
 func listed(files []ChangedFile, path string) bool {

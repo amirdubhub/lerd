@@ -2,17 +2,18 @@
   import { onMount } from 'svelte';
   import Modal from '$components/Modal.svelte';
   import Toggle from '$components/Toggle.svelte';
+  import Icon from '$components/Icon.svelte';
+  import { tooltip } from '$lib/tooltip';
+  import MonacoDiffEditor from '$components/MonacoDiffEditor.svelte';
   import { closeModal } from '$stores/modals';
   import {
     SECTIONS,
-    diffLines,
-    diffStats,
+    languageFor,
     loadGitChanges,
-    loadGitPatch,
+    loadGitVersions,
     type GitChanges,
     type GitDiffSection,
-    type GitPatch,
-    type DiffLineKind
+    type GitVersions
   } from '$lib/gitDiff';
   import { m } from '../paraglide/messages.js';
 
@@ -25,21 +26,23 @@
 
   let changes = $state<GitChanges | null>(null);
   let selected = $state<{ section: GitDiffSection; file: string } | null>(null);
-  let patch = $state<GitPatch | null>(null);
+  let versions = $state<GitVersions | null>(null);
+  let stats = $state<{ added: number; removed: number } | null>(null);
   let error = $state('');
   let ignoreSpace = $state(false);
+  let fullscreen = $state(false);
+  let filesHidden = $state(false);
+
+  // Escape and the close button leave full screen first, as Tinker's does.
+  function close() {
+    if (fullscreen) fullscreen = false;
+    else closeModal();
+  }
 
   const sectionLabel: Record<GitDiffSection, () => string> = {
     staged: m.gitDiff_staged,
     unstaged: m.gitDiff_unstaged,
     untracked: m.gitDiff_untracked
-  };
-  const lineClass: Record<DiffLineKind, string> = {
-    add: 'bg-green-500/10 text-green-700 dark:text-green-300',
-    del: 'bg-red-500/10 text-red-700 dark:text-red-300',
-    hunk: 'text-sky-600 dark:text-sky-400',
-    meta: 'text-gray-500 dark:text-gray-400 italic',
-    context: 'text-gray-700 dark:text-gray-300'
   };
   const statusClass: Record<string, string> = {
     A: 'text-green-600 dark:text-green-400',
@@ -49,8 +52,6 @@
   };
 
   const empty = $derived(!!changes && SECTIONS.every((s) => changes![s].length === 0));
-  const lines = $derived(patch ? diffLines(patch.patch) : []);
-  const stats = $derived(diffStats(lines));
 
   onMount(async () => {
     try {
@@ -64,30 +65,55 @@
 
   async function select(section: GitDiffSection, file: string) {
     selected = { section, file };
-    patch = null;
+    versions = null;
+    stats = null;
     error = '';
     try {
-      const ignoring = ignoreSpace;
-      const p = await loadGitPatch(domain, path, section, file, ignoring);
+      const v = await loadGitVersions(domain, path, section, file);
       // A slower answer for an earlier click must not replace this one.
-      if (selected?.section === section && selected.file === file && ignoreSpace === ignoring) patch = p;
+      if (selected?.section === section && selected.file === file) versions = v;
     } catch (e) {
       error = e instanceof Error ? e.message : m.common_failed();
     }
   }
-
-  function toggleSpace() {
-    ignoreSpace = !ignoreSpace;
-    if (selected) select(selected.section, selected.file);
-  }
 </script>
 
-<Modal open size="2xl" title={m.gitDiff_title({ branch })} onclose={closeModal}>
+<Modal open size="2xl" tall {fullscreen} title={m.gitDiff_title({ branch })} onclose={close}>
+  {#snippet actions()}
+    <!-- Same gap and icon size as the modal's own close button beside them. -->
+    <div class="flex items-center gap-3">
+      <button
+        type="button"
+        onclick={() => (filesHidden = !filesHidden)}
+        class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+        use:tooltip={filesHidden ? m.gitDiff_showFiles() : m.gitDiff_hideFiles()}
+        aria-label={filesHidden ? m.gitDiff_showFiles() : m.gitDiff_hideFiles()}
+        aria-pressed={!filesHidden}
+      >
+        <Icon name="sidebar" class="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onclick={() => (fullscreen = !fullscreen)}
+        class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+        use:tooltip={fullscreen ? m.tinker_exitFullscreenTitle() : m.tinker_fullscreenTitle()}
+        aria-label={fullscreen ? m.tinker_exitFullscreenTitle() : m.tinker_fullscreenTitle()}
+      >
+        <Icon name={fullscreen ? 'minimize' : 'maximize'} class="w-5 h-5" />
+      </button>
+    </div>
+  {/snippet}
   {#if empty}
     <p class="px-5 py-6 text-sm text-gray-500 dark:text-gray-400">{m.gitDiff_empty()}</p>
   {:else}
-    <div class="flex flex-col md:flex-row h-[75vh] min-h-0">
-      <nav class="md:w-72 shrink-0 max-h-48 md:max-h-none overflow-y-auto border-b md:border-b-0 md:border-r border-gray-100 dark:border-lerd-border py-2">
+    <div class="flex flex-col md:flex-row min-h-0 flex-1">
+      <!-- Width animates like the dashboard's own side panel; the list keeps its
+           width inside so rows slide out instead of squeezing. -->
+      <div
+        inert={filesHidden}
+        class="shrink-0 overflow-hidden md:flex md:transition-[width] md:duration-200 md:ease-out {filesHidden ? 'hidden md:w-0' : 'md:w-72'}"
+      >
+      <nav class="md:w-72 shrink-0 max-h-48 md:max-h-none md:h-full overflow-y-auto border-b md:border-b-0 md:border-r border-gray-100 dark:border-lerd-border py-2">
         {#each SECTIONS as section (section)}
           {#if changes && changes[section].length > 0}
             <h4 class="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
@@ -110,37 +136,37 @@
           {/if}
         {/each}
       </nav>
-      <div class="flex-1 min-w-0 min-h-0 overflow-auto">
+      </div>
+      <div class="flex-1 min-w-0 min-h-0 flex flex-col">
         {#if error}
           <p class="px-5 py-4 text-sm text-red-600 dark:text-red-400">{error}</p>
-        {:else if patch && selected}
+        {:else if versions && selected}
           <div class="sticky top-0 z-10 flex items-center gap-3 px-4 py-2 border-b border-gray-100 dark:border-lerd-border bg-white dark:bg-lerd-card font-mono text-xs">
             <span class="truncate text-gray-800 dark:text-gray-100" title={selected.file}>{selected.file}</span>
-            <span class="ml-auto shrink-0 tabular-nums text-green-600 dark:text-green-400">+{stats.added}</span>
-            <span class="shrink-0 tabular-nums text-red-600 dark:text-red-400">−{stats.removed}</span>
-            <span class="shrink-0 flex items-center gap-2 pl-3 border-l border-gray-200 dark:border-lerd-border font-sans text-gray-500 dark:text-gray-400">
+            {#if stats}
+              <span class="ml-auto shrink-0 tabular-nums text-green-600 dark:text-green-400">+{stats.added}</span>
+              <span class="shrink-0 tabular-nums text-red-600 dark:text-red-400">−{stats.removed}</span>
+            {/if}
+            <span class="{stats ? '' : 'ml-auto'} shrink-0 flex items-center gap-2 pl-3 border-l border-gray-200 dark:border-lerd-border font-sans text-gray-500 dark:text-gray-400">
               {m.gitDiff_ignoreSpace()}
-              <Toggle on={ignoreSpace} title={m.gitDiff_ignoreSpace()} onclick={toggleSpace} />
+              <Toggle on={ignoreSpace} title={m.gitDiff_ignoreSpace()} onclick={() => (ignoreSpace = !ignoreSpace)} />
             </span>
           </div>
-          {#if patch.truncated}
-            <p class="px-4 py-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10">{m.gitDiff_truncated()}</p>
+          {#if versions.binary || versions.too_large}
+            <p class="px-5 py-4 text-sm text-gray-500 dark:text-gray-400">
+              {versions.binary ? m.gitDiff_binary() : m.gitDiff_tooLarge()}
+            </p>
+          {:else}
+            <div class="flex-1 min-h-0">
+              <MonacoDiffEditor
+                original={versions.original}
+                modified={versions.modified}
+                language={languageFor(selected.file)}
+                {ignoreSpace}
+                onStats={(s) => (stats = s)}
+              />
+            </div>
           {/if}
-          {#if lines.length === 0 && ignoreSpace}
-            <p class="px-5 py-4 text-sm text-gray-500 dark:text-gray-400">{m.gitDiff_onlyWhitespace()}</p>
-          {/if}
-          <div class="py-1 font-mono text-xs leading-5 min-w-max">
-            {#each lines as l, i (i)}
-              {@const code = l.kind === 'add' || l.kind === 'del' || l.kind === 'context'}
-              <div class="flex {lineClass[l.kind]}">
-                <span class="w-12 shrink-0 pr-2 text-right select-none tabular-nums text-gray-400 dark:text-gray-500">{l.old ?? ''}</span>
-                <span class="w-12 shrink-0 pr-2 text-right select-none tabular-nums text-gray-400 dark:text-gray-500">{l.new ?? ''}</span>
-                <!-- The +/- gets its own column so changed indentation stays visible as indentation. -->
-                <span class="w-5 shrink-0 text-center select-none">{code ? l.text.slice(0, 1).trim() : ''}</span>
-                <span class="pr-4 whitespace-pre">{(code ? l.text.slice(1) : l.text) || ' '}</span>
-              </div>
-            {/each}
-          </div>
         {/if}
       </div>
     </div>

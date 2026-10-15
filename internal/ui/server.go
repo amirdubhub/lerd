@@ -6731,8 +6731,8 @@ func handleSiteGitStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSiteGitDiff answers GET /api/sites/git-diff?domain=...&path=... with
-// the files a checkout has changed, or with one file's patch when section and
-// file are given. path must be one of the site's own checkouts.
+// the files a checkout has changed, or with both versions of one file when
+// section and file are given. path must be one of the site's own checkouts.
 func handleSiteGitDiff(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.NotFound(w, r)
@@ -6758,12 +6758,12 @@ func handleSiteGitDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, changes)
 		return
 	}
-	patch, err := gitpkg.FilePatch(dir, q.Get("section"), q.Get("file"), q.Get("ignore_space") == "1")
+	versions, err := gitpkg.FileVersions(dir, q.Get("section"), q.Get("file"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, patch)
+	writeJSON(w, versions)
 }
 
 // isSiteCheckout reports whether dir is the site's main checkout or one of its

@@ -47,28 +47,8 @@ func TestReadChanges(t *testing.T) {
 	same("untracked", got.Untracked, []ChangedFile{{"new file.txt", "?"}})
 }
 
-// Each section diffs against its own base: staged against HEAD, unstaged against the index.
-func TestFilePatch(t *testing.T) {
-	dir := changesFixture(t)
-	cases := []struct{ section, path, has, hasNot string }{
-		{SectionStaged, "a", "+one staged\n", "edited"},
-		{SectionUnstaged, "a", "+one staged then edited", "-one\n"},
-		{SectionStaged, "b", "-two", ""},
-		{SectionUntracked, "new file.txt", "+fresh", ""},
-	}
-	for _, c := range cases {
-		p, err := FilePatch(dir, c.section, c.path, false)
-		if err != nil {
-			t.Fatalf("%s %s: %v", c.section, c.path, err)
-		}
-		if !strings.Contains(p.Patch, c.has) || (c.hasNot != "" && strings.Contains(p.Patch, c.hasNot)) {
-			t.Errorf("%s %s: patch\n%s", c.section, c.path, p.Patch)
-		}
-	}
-}
-
-// The untracked diff reads whatever path it gets, so only listed paths may reach it.
-func TestFilePatch_refusesUnlistedPath(t *testing.T) {
+// Reading a working file takes whatever path it gets, so only listed paths may reach it.
+func TestFileVersions_refusesUnlistedPath(t *testing.T) {
 	dir := changesFixture(t)
 	outside := filepath.Join(t.TempDir(), "outside")
 	write(t, outside, "x")
@@ -79,23 +59,9 @@ func TestFilePatch_refusesUnlistedPath(t *testing.T) {
 		{SectionUnstaged, "b"},
 		{"everything", "a"},
 	} {
-		if _, err := FilePatch(dir, c.section, c.path, false); err == nil {
+		if _, err := FileVersions(dir, c.section, c.path); err == nil {
 			t.Errorf("%s %s: expected a refusal", c.section, c.path)
 		}
-	}
-}
-
-func TestFilePatch_truncatesHugeFiles(t *testing.T) {
-	dir := changesFixture(t)
-	if err := os.WriteFile(filepath.Join(dir, "huge.js"), []byte(strings.Repeat("x = 1;\n", maxPatchBytes/4)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	p, err := FilePatch(dir, SectionUntracked, "huge.js", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !p.Truncated || len(p.Patch) > maxPatchBytes || !strings.HasSuffix(p.Patch, "\n") {
-		t.Errorf("truncated=%v len=%d", p.Truncated, len(p.Patch))
 	}
 }
 
@@ -114,35 +80,49 @@ func TestReadChanges_beforeFirstCommit(t *testing.T) {
 	if len(got.Staged) != 1 || got.Staged[0] != (ChangedFile{"staged.php", "A"}) || len(got.Untracked) != 1 {
 		t.Fatalf("got %+v", got)
 	}
-	p, err := FilePatch(dir, SectionStaged, "staged.php", false)
-	if err != nil || !strings.Contains(p.Patch, "+s") {
-		t.Fatalf("patch %q err %v", p.Patch, err)
+	v, err := FileVersions(dir, SectionStaged, "staged.php")
+	if err != nil || v.Original != "" || v.Modified != "s\n" {
+		t.Fatalf("versions %+v err %v", v, err)
 	}
 }
 
-// Re-indenting a file rewrites every line; ignoring whitespace leaves only the real change.
-func TestFilePatch_ignoresWhitespace(t *testing.T) {
-	dir := t.TempDir()
-	gitRun(t, dir, "init", "-q")
-	write(t, filepath.Join(dir, "c.yaml"), "services:\n    - mysql\n    - redis\n")
-	gitRun(t, dir, "add", ".")
-	gitRun(t, dir, "commit", "-q", "-m", "base")
-	write(t, filepath.Join(dir, "c.yaml"), "services:\n  - mysql\n  - redis\n  - mailpit\n")
-
-	full, err := FilePatch(dir, SectionUnstaged, "c.yaml", false)
-	if err != nil || !strings.Contains(full.Patch, "-    - mysql") {
-		t.Fatalf("full: %q %v", full.Patch, err)
+// Each section compares its own pair: HEAD to index, index to tree, nothing to tree.
+func TestFileVersions(t *testing.T) {
+	dir := changesFixture(t)
+	cases := []struct{ section, path, original, modified string }{
+		{SectionStaged, "a", "one\n", "one staged\n"},
+		{SectionUnstaged, "a", "one staged\n", "one staged then edited\n"},
+		{SectionStaged, "b", "two\n", ""},
+		{SectionUntracked, "new file.txt", "", "fresh\n"},
 	}
-	quiet, err := FilePatch(dir, SectionUnstaged, "c.yaml", true)
-	if err != nil {
+	for _, c := range cases {
+		v, err := FileVersions(dir, c.section, c.path)
+		if err != nil {
+			t.Fatalf("%s %s: %v", c.section, c.path, err)
+		}
+		if v.Original != c.original || v.Modified != c.modified {
+			t.Errorf("%s %s: got %q -> %q", c.section, c.path, v.Original, v.Modified)
+		}
+	}
+}
+
+func TestFileVersions_linkBinaryAndHuge(t *testing.T) {
+	dir := changesFixture(t)
+	secret := filepath.Join(t.TempDir(), "secret")
+	write(t, secret, "do not read")
+	if err := os.Symlink(secret, filepath.Join(dir, "link")); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(quiet.Patch, "-    - mysql") || !strings.Contains(quiet.Patch, "+  - mailpit") {
-		t.Errorf("ignoring whitespace: %q", quiet.Patch)
-	}
+	write(t, filepath.Join(dir, "logo.png"), "PNG\x00\x01")
+	write(t, filepath.Join(dir, "bundle.js"), strings.Repeat("x", maxVersionBytes+1))
 
-	write(t, filepath.Join(dir, "c.yaml"), "services:\n  - mysql\n  - redis\n")
-	if p, err := FilePatch(dir, SectionUnstaged, "c.yaml", true); err != nil || strings.Contains(p.Patch, "@@") {
-		t.Errorf("whitespace-only change: %q %v", p.Patch, err)
+	if v, _ := FileVersions(dir, SectionUntracked, "link"); v.Modified != secret {
+		t.Errorf("symlink: got %q, want its target path", v.Modified)
+	}
+	if v, _ := FileVersions(dir, SectionUntracked, "logo.png"); !v.Binary || v.Modified != "" {
+		t.Errorf("binary: %+v", v)
+	}
+	if v, _ := FileVersions(dir, SectionUntracked, "bundle.js"); !v.TooLarge || v.Modified != "" {
+		t.Errorf("huge: too_large=%v len=%d", v.TooLarge, len(v.Modified))
 	}
 }
