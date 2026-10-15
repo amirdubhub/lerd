@@ -73,10 +73,24 @@ func installWindowsSide(w io.Writer) error {
 	}
 	fmt.Fprintf(w, "  ✓ lerd.exe installed in %s and on your Windows PATH\n", winDir)
 
-	if _, err := powershell(agentScript(winDir)); err != nil {
-		return fmt.Errorf("starting the lerd agent: %w", err)
+	// With the Lerd desktop app registered as the lerd:// handler, the app
+	// starts the agent at login, itself started from Program Files. An
+	// unsigned exe registered under Run from PowerShell and started through a
+	// headless conhost reads to Windows Defender as malware making itself
+	// persistent, and it has quarantined lerd.exe for exactly that. The running
+	// agent exits on its own now that the config is rewritten, and the app
+	// starts it again.
+	if desktopnotify.AppInstalled() {
+		if _, err := powershell(agentHandOverScript()); err != nil {
+			return fmt.Errorf("handing the lerd agent to the desktop app: %w", err)
+		}
+		fmt.Fprintln(w, "  ✓ the Lerd desktop app runs the lerd agent")
+	} else {
+		if _, err := powershell(agentScript(winDir)); err != nil {
+			return fmt.Errorf("starting the lerd agent: %w", err)
+		}
+		fmt.Fprintln(w, "  ✓ lerd agent starts at Windows login and is running")
 	}
-	fmt.Fprintln(w, "  ✓ lerd agent starts at Windows login and is running")
 
 	if dirs := parkedWindowsPaths(); len(dirs) > 0 {
 		if _, err := powershell(pinFoldersScript(dirs)); err != nil {
@@ -164,6 +178,12 @@ func replaceRunningExe(path string, exe []byte) error {
 		}
 	}
 	return os.WriteFile(path, exe, 0o755)
+}
+
+// agentHandOverScript drops the agent's own Run entry, which an install from
+// before the desktop app left behind.
+func agentHandOverScript() string {
+	return `Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'lerd' -ErrorAction SilentlyContinue`
 }
 
 // agentRunValue is the HKCU Run entry. conhost --headless keeps the agent from

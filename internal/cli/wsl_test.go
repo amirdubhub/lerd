@@ -73,6 +73,18 @@ func TestWindowsDriveWarning(t *testing.T) {
 	}
 }
 
+// With the desktop app running the agent, an install from before it must not
+// keep a Run entry starting a second one.
+func TestAgentHandOverScript_DropsTheAgentRunEntry(t *testing.T) {
+	got := agentHandOverScript()
+	if !strings.Contains(got, `Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'lerd'`) {
+		t.Errorf("the hand-over must drop the agent's Run entry:\n%s", got)
+	}
+	if strings.Contains(got, "conhost") || strings.Contains(got, "Start-Process") {
+		t.Errorf("the hand-over must not start the agent itself:\n%s", got)
+	}
+}
+
 func TestAgentRunValue_Headless(t *testing.T) {
 	got := agentRunValue(`C:\Users\me\AppData\Local\lerd\bin`)
 	want := `conhost.exe --headless "C:\Users\me\AppData\Local\lerd\bin\lerd.exe" --agent`

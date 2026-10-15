@@ -9,3 +9,5 @@ import "os"
 func disableQuickEdit() {}
 
 func redirectStderr(*os.File) {}
+
+func claimAgent() bool { return true }

@@ -60,6 +60,10 @@ func main() {
 		os.Exit(runInDistro(args))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "--agent" {
+		// Before the log, which a second agent would otherwise truncate.
+		if !claimAgent() {
+			os.Exit(agentRunningExit)
+		}
 		f, err := os.OpenFile(filepath.Join(dir, "lerd-agent.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err == nil {
 			log.SetOutput(f)
@@ -87,6 +91,10 @@ func runInDistro(wslArgs []string) int {
 	}
 	return 0
 }
+
+// agentRunningExit is the exit code of an agent that found another one
+// running, so whoever started it can tell that from a failure.
+const agentRunningExit = 3
 
 // agent boots the distro and answers DNS for the site TLD. It returns once its config file is removed or
 // rewritten, which is how uninstall and a rerun of wsl:setup stop it: the
