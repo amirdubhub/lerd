@@ -4,7 +4,6 @@ package tray
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/getlantern/systray"
 )
@@ -94,26 +93,27 @@ func buildMenu(mono bool) *menuState {
 	return m
 }
 
-// serviceRows renders one row per service. Paused services show yellow: they
-// were stopped deliberately, so red would read as broken.
-func serviceRows(snap *Snapshot) []row {
-	rows := make([]row, 0, len(snap.Services))
-	for _, svc := range snap.Services {
-		dot, verb := "🔴", "start"
-		switch {
-		case svc.Paused:
-			dot = "🟡"
-		case svc.Status == "active":
-			dot, verb = "🟢", "stop"
-		}
-		rows = append(rows, row{
-			title:   fmt.Sprintf("%s %s", dot, svc.Name),
-			tooltip: fmt.Sprintf("Click to %s %s", verb, svc.Name),
-			args:    []string{"service", verb, svc.Name},
-		})
+// dots draw a model state the way the native menu shows it.
+var dots = map[State]string{StateRunning: "🟢", StateStopped: "🔴", StateWarning: "🟡", StateDisabled: "⚪"}
+
+// dotted renders an item as a native title, its state as a leading dot.
+func dotted(it MenuItem) string {
+	if d, ok := dots[it.State]; ok {
+		return d + " " + it.Label
+	}
+	return it.Label
+}
+
+// itemRows turns model items into pool rows.
+func itemRows(items []MenuItem, title func(MenuItem) string) []row {
+	rows := make([]row, 0, len(items))
+	for _, it := range items {
+		rows = append(rows, row{title: title(it), tooltip: it.Tooltip, args: it.Args})
 	}
 	return rows
 }
+
+func serviceRows(snap *Snapshot) []row { return itemRows(serviceItems(snap), dotted) }
 
 // serviceSection returns the rows the Services section should show and whether
 // it should be touched at all. A poll whose services call did not come back has
@@ -128,134 +128,22 @@ func serviceSection(snap *Snapshot) ([]row, bool) {
 
 // phpRows renders the installed PHP versions, ticking the current default.
 func phpRows(snap *Snapshot) []row {
-	rows := make([]row, 0, len(snap.PHPVersions))
-	for _, p := range snap.PHPVersions {
-		title := p.Version
-		if p.Version == snap.PHPDefault {
-			title = "✔ " + p.Version
+	return itemRows(phpItems(snap), func(it MenuItem) string {
+		if *it.Checked {
+			return "✔ " + it.Label
 		}
-		rows = append(rows, row{
-			title:   title,
-			tooltip: "Make PHP " + p.Version + " the default",
-			args:    []string{"use", p.Version},
-		})
-	}
-	return rows
+		return it.Label
+	})
 }
 
-// servicesTitle summarises the section on the parent row so the count reads
-// without opening the submenu.
-func servicesTitle(snap *Snapshot) string {
-	if len(snap.Services) == 0 {
-		return "Services"
-	}
-	running := 0
-	for _, svc := range snap.Services {
-		if svc.Status == "active" && !svc.Paused {
-			running++
-		}
-	}
-	return fmt.Sprintf("Services (%d/%d)", running, len(snap.Services))
-}
-
-func phpTitle(snap *Snapshot) string {
-	if snap.PHPDefault == "" {
-		return "PHP"
-	}
-	return "PHP " + snap.PHPDefault
-}
-
-// workersTitle renders the worker line and reports whether it should show at
-// all. A stopped worker is normal on a paused or idle-suspended site, so the
-// alarm comes from the health endpoint's verdict, never from a raw count; with
-// nothing running and nothing broken the line stays hidden rather than
-// standing permanently red.
 func workersTitle(snap *Snapshot) (string, bool) {
-	switch down := len(snap.WorkersDown); {
-	case down == 1:
-		return fmt.Sprintf("  🔴 worker down (%s)", snap.WorkersDown[0]), true
-	case down > 1:
-		return fmt.Sprintf("  🔴 %d workers down", down), true
-	case snap.WorkersRunning == 1:
-		return "  🟢 1 worker", true
-	case snap.WorkersRunning > 1:
-		return fmt.Sprintf("  🟢 %d workers", snap.WorkersRunning), true
-	default:
-		return "", false
+	if it, ok := workersItem(snap); ok {
+		return "  " + dotted(it), true
 	}
+	return "", false
 }
 
-func statusDot(ok bool) string {
-	if ok {
-		return "🟢"
-	}
-	return "🔴"
-}
-
-// actionMessage is the notification for a finished menu action: what was done,
-// or what failed with the last line lerd printed. Opening the dashboard shows
-// itself, so only its failure is reported.
-func actionMessage(args []string, err error, stderr string) (title, body string, show bool) {
-	doing, done := describeAction(args)
-	if err != nil {
-		return "Couldn't " + doing, lastLine(stderr, err.Error()), true
-	}
-	return done, "", done != ""
-}
-
-// describeAction names a menu action as a goal ("start redis") and as a result
-// ("redis started").
-func describeAction(args []string) (doing, done string) {
-	arg := func(i int) string {
-		if i < len(args) {
-			return args[i]
-		}
-		return ""
-	}
-	toggle := func(label string, on bool) (string, string) {
-		state := "off"
-		if on {
-			state = "on"
-		}
-		return "turn " + strings.ToLower(label) + " " + state, label + " " + state
-	}
-	switch arg(0) {
-	case "start":
-		return "start Lerd", "Lerd started"
-	case "stop", "quit":
-		return "stop Lerd", "Lerd stopped"
-	case "dashboard":
-		return "open the dashboard", ""
-	case "service":
-		return arg(1) + " " + arg(2), arg(2) + " " + map[string]string{"start": "started", "stop": "stopped"}[arg(1)]
-	case "use":
-		return "switch to PHP " + arg(1), "PHP " + arg(1) + " is the default"
-	case "autostart":
-		return toggle("Autostart", arg(1) == "enable")
-	case "lan":
-		if arg(1) == "services" {
-			return toggle("Services on the LAN", arg(2) == "on")
-		}
-		return toggle("LAN access", arg(1) == "expose")
-	case "dump":
-		return toggle("Dumps", arg(1) == "on")
-	case "notify":
-		return toggle("Notifications", arg(1) == "on")
-	case "tray":
-		return "change the tray icon", "Tray icon: " + arg(2)
-	}
-	cmd := "lerd " + strings.Join(args, " ")
-	return "run " + cmd, cmd + " done"
-}
-
-// lastLine is the last non-empty line of out, or fallback when there is none.
-func lastLine(out, fallback string) string {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if l := strings.TrimSpace(lines[len(lines)-1]); l != "" {
-		return l
-	}
-	return fallback
-}
+func statusDot(ok bool) string { return dots[stateOf(ok)] }
 
 // toggleTitle renders a settings toggle, e.g. "Notifications: ✔ On".
 func toggleTitle(label string, on bool) string {
@@ -291,14 +179,7 @@ func (m *menuState) apply(snap *Snapshot) {
 
 	setItemTitle(m.mNginx, fmt.Sprintf("  %s nginx", statusDot(snap.NginxRunning)))
 
-	switch {
-	case snap.DNSDisabled:
-		setItemTitle(m.mDNS, "  ⚪ dns (disabled)")
-	case !snap.DNSOK && snap.DNSDegraded:
-		setItemTitle(m.mDNS, "  🟡 dns")
-	default:
-		setItemTitle(m.mDNS, fmt.Sprintf("  %s dns", statusDot(snap.DNSOK)))
-	}
+	setItemTitle(m.mDNS, "  "+dotted(dnsItem(snap)))
 
 	// The worker count comes from the services call too, so both lines wait for
 	// a poll that actually read it rather than redrawing from a blank.

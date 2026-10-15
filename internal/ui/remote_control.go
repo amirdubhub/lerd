@@ -28,6 +28,7 @@ var loopbackOnlyRoutes = []string{
 	"/api/lerd/stop",            // shuts down all lerd containers
 	"/api/lerd/quit",            // exits the dashboard process
 	"/api/lerd/update-terminal", // spawns a terminal emulator on the host
+	"/api/tray/action",          // stops lerd and runs lerd commands, like the buttons above
 	"/api/logs/terminal",        // spawns a terminal emulator on the host
 	"/api/browse",               // browses host filesystem
 	"/api/push/test",            // fires notifications onto subscribed devices

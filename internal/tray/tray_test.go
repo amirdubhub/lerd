@@ -96,9 +96,9 @@ func TestActionMessage(t *testing.T) {
 		{[]string{"frobnicate"}, nil, "", "lerd frobnicate done", "", true},
 	}
 	for _, c := range cases {
-		title, body, show := actionMessage(c.args, c.err, c.stderr)
+		title, body, show := ActionMessage(c.args, c.err, c.stderr)
 		if title != c.title || body != c.body || show != c.show {
-			t.Errorf("actionMessage(%v, %v) = %q, %q, %v; want %q, %q, %v", c.args, c.err, title, body, show, c.title, c.body, c.show)
+			t.Errorf("ActionMessage(%v, %v) = %q, %q, %v; want %q, %q, %v", c.args, c.err, title, body, show, c.title, c.body, c.show)
 		}
 	}
 }

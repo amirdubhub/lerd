@@ -369,6 +369,8 @@ func Start(currentVersion string) error {
 	mux.HandleFunc("/api/lerd/stop", withCORS(handleLerdStop))
 	mux.HandleFunc("/api/lerd/quit", withCORS(handleLerdQuit))
 	mux.HandleFunc("/api/lerd/update-terminal", withCORS(handleLerdUpdateTerminal))
+	mux.HandleFunc("/api/tray", withCORS(handleTray))
+	mux.HandleFunc("/api/tray/action", withCORS(publishAfter(handleTrayAction, eventbus.KindStatus, eventbus.KindServices, eventbus.KindSites)))
 	mux.HandleFunc("/api/remote-control", withCORS(handleRemoteControl))
 	mux.HandleFunc("/api/access-mode", withCORS(handleAccessMode))
 	mux.HandleFunc("/api/lan/status", withCORS(handleLANStatus))
