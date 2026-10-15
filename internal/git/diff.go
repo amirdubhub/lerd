@@ -2,9 +2,12 @@ package git
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -75,22 +78,37 @@ func nameStatus(dir string, args ...string) ([]ChangedFile, error) {
 		return nil, err
 	}
 	files := []ChangedFile{}
+	// A conflicted path comes once as U and again with a plain status; U wins.
+	seen := map[string]int{}
 	fields := strings.Split(out, "\x00")
 	for i := 0; i+1 < len(fields); i += 2 {
-		if fields[i] != "" {
-			files = append(files, ChangedFile{Path: fields[i+1], Status: fields[i][:1]})
+		if fields[i] == "" {
+			continue
 		}
+		f := ChangedFile{Path: fields[i+1], Status: fields[i][:1]}
+		if at, dup := seen[f.Path]; dup {
+			if f.Status == "U" {
+				files[at] = f
+			}
+			continue
+		}
+		seen[f.Path] = len(files)
+		files = append(files, f)
 	}
 	return files, nil
 }
 
 // Versions are a file's two sides in a section, for a side-by-side editor.
-// Binary and TooLarge leave both sides empty; a side the file is missing from is "".
+// Binary, TooLarge and Unreadable leave both sides empty; a side the file is
+// missing from is "".
 type Versions struct {
 	Original string `json:"original"`
 	Modified string `json:"modified"`
 	Binary   bool   `json:"binary"`
 	TooLarge bool   `json:"too_large"`
+	// Unreadable is a side git cannot hand over as a file, such as a merge
+	// conflict, which has no single index entry, or a submodule.
+	Unreadable bool `json:"unreadable"`
 }
 
 // FileVersions reads both sides of a file in section: staged compares HEAD with
@@ -100,20 +118,40 @@ func FileVersions(dir, section, path string) (Versions, error) {
 	if err != nil {
 		return Versions{}, err
 	}
-	if !listed(files, path) {
+	f, ok := find(files, path)
+	if !ok {
 		return Versions{}, fmt.Errorf("%q has no %s changes", path, section)
 	}
-	var original, modified []byte
+	if f.Status == "U" {
+		return Versions{Unreadable: true}, nil
+	}
+	// git's status letter says which side the file is missing from, so a read
+	// that fails anywhere else means it cannot be compared, not that it is gone.
+	var from, to side
 	switch section {
 	case SectionStaged:
-		original, modified = blob(dir, "HEAD:"+path), blob(dir, ":"+path)
+		from = side{spec: "HEAD:" + path, absent: f.Status == "A"}
+		to = side{spec: ":" + path, absent: f.Status == "D"}
 	case SectionUnstaged:
-		original, modified = blob(dir, ":"+path), workingFile(dir, path)
+		from = side{spec: ":" + path}
+		to = side{tree: true, absent: f.Status == "D"}
 	case SectionUntracked:
-		modified = workingFile(dir, path)
+		from = side{absent: true}
+		to = side{tree: true}
 	}
-	if len(original) > maxVersionBytes || len(modified) > maxVersionBytes {
-		return Versions{TooLarge: true}, nil
+	var original, modified []byte
+	for _, s := range []struct {
+		side side
+		into *[]byte
+	}{{from, &original}, {to, &modified}} {
+		b, err := s.side.read(dir, path)
+		if errors.Is(err, errTooLarge) {
+			return Versions{TooLarge: true}, nil
+		}
+		if err != nil {
+			return Versions{Unreadable: true}, nil
+		}
+		*s.into = b
 	}
 	if bytes.IndexByte(original, 0) >= 0 || bytes.IndexByte(modified, 0) >= 0 {
 		return Versions{Binary: true}, nil
@@ -121,33 +159,67 @@ func FileVersions(dir, section, path string) (Versions, error) {
 	return Versions{Original: string(original), Modified: string(modified)}, nil
 }
 
-// blob is the object at spec, or nil where the file is not on that side
-// (added, deleted, or no commit yet).
-func blob(dir, spec string) []byte {
-	out, err := Output(dir, "cat-file", "blob", spec)
-	if err != nil {
-		return nil
+var errTooLarge = errors.New("file too large to compare")
+
+// side is where one version of a file lives: a git object, or the working tree.
+type side struct {
+	spec   string
+	tree   bool
+	absent bool
+}
+
+// read checks the size before loading anything, so a database dump sitting in
+// the checkout is refused without being read into memory.
+func (s side) read(dir, path string) ([]byte, error) {
+	if s.absent {
+		return nil, nil
 	}
-	return []byte(out)
+	if s.tree {
+		return workingFile(filepath.Join(dir, path))
+	}
+	size, err := Output(dir, "cat-file", "-s", s.spec)
+	if err != nil {
+		return nil, err
+	}
+	if n, err := strconv.ParseInt(strings.TrimSpace(size), 10, 64); err != nil || n > maxVersionBytes {
+		return nil, errTooLarge
+	}
+	out, err := Output(dir, "cat-file", "blob", s.spec)
+	return []byte(out), err
 }
 
 // workingFile reads a symlink as its target path, the way git stores it, so a
 // link never hands the dashboard a file outside the checkout.
-func workingFile(dir, path string) []byte {
-	full := filepath.Join(dir, path)
-	if fi, err := os.Lstat(full); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		target, _ := os.Readlink(full)
-		return []byte(target)
+func workingFile(full string) ([]byte, error) {
+	fi, err := os.Lstat(full)
+	if err != nil {
+		return nil, err
 	}
-	b, _ := os.ReadFile(full)
-	return b
+	if fi.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(full)
+		return []byte(target), err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a file", full)
+	}
+	file, err := os.Open(full)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	// Bounded even after the size check, for a file still being written.
+	b, err := io.ReadAll(io.LimitReader(file, maxVersionBytes+1))
+	if err == nil && len(b) > maxVersionBytes {
+		return nil, errTooLarge
+	}
+	return b, err
 }
 
-func listed(files []ChangedFile, path string) bool {
+func find(files []ChangedFile, path string) (ChangedFile, bool) {
 	for _, f := range files {
 		if f.Path == path {
-			return true
+			return f, true
 		}
 	}
-	return false
+	return ChangedFile{}, false
 }

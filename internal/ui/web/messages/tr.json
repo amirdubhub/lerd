@@ -1620,6 +1620,7 @@
   "gitDiff_empty": "Commit edilmemiş değişiklik yok.",
   "gitDiff_binary": "İkili dosya, karşılaştırılacak metin yok.",
   "gitDiff_tooLarge": "Bu dosya 1 MB'tan büyük, burada karşılaştırmak için çok büyük.",
+  "gitDiff_unreadable": "Bu dosya burada karşılaştırılamıyor, örneğin bir merge çakışmasında veya bir alt modülde.",
   "gitDiff_ignoreSpace": "Boşlukları gizle",
   "gitDiff_hideFiles": "Dosya listesini gizle",
   "gitDiff_showFiles": "Dosya listesini göster",

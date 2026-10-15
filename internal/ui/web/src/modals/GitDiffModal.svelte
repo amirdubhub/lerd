@@ -73,7 +73,7 @@
       // A slower answer for an earlier click must not replace this one.
       if (selected?.section === section && selected.file === file) versions = v;
     } catch (e) {
-      error = e instanceof Error ? e.message : m.common_failed();
+      if (selected?.section === section && selected.file === file) error = e instanceof Error ? e.message : m.common_failed();
     }
   }
 </script>
@@ -152,9 +152,9 @@
               <Toggle on={ignoreSpace} title={m.gitDiff_ignoreSpace()} onclick={() => (ignoreSpace = !ignoreSpace)} />
             </span>
           </div>
-          {#if versions.binary || versions.too_large}
+          {#if versions.binary || versions.too_large || versions.unreadable}
             <p class="px-5 py-4 text-sm text-gray-500 dark:text-gray-400">
-              {versions.binary ? m.gitDiff_binary() : m.gitDiff_tooLarge()}
+              {versions.binary ? m.gitDiff_binary() : versions.too_large ? m.gitDiff_tooLarge() : m.gitDiff_unreadable()}
             </p>
           {:else}
             <div class="flex-1 min-h-0">

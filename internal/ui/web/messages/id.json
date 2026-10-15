@@ -1620,6 +1620,7 @@
   "gitDiff_empty": "Tidak ada perubahan yang belum di-commit.",
   "gitDiff_binary": "File biner, tidak ada teks untuk dibandingkan.",
   "gitDiff_tooLarge": "File ini lebih dari 1 MB, terlalu besar untuk dibandingkan di sini.",
+  "gitDiff_unreadable": "File ini tidak bisa dibandingkan di sini, misalnya saat konflik merge atau pada submodule.",
   "gitDiff_ignoreSpace": "Sembunyikan spasi",
   "gitDiff_hideFiles": "Sembunyikan daftar file",
   "gitDiff_showFiles": "Tampilkan daftar file",

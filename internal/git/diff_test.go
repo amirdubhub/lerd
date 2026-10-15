@@ -126,3 +126,69 @@ func TestFileVersions_linkBinaryAndHuge(t *testing.T) {
 		t.Errorf("huge: too_large=%v len=%d", v.TooLarge, len(v.Modified))
 	}
 }
+
+// A dump left in the checkout is refused on its size, never read: the sparse
+// file below would take minutes and gigabytes of memory to load.
+func TestFileVersions_refusesHugeFilesBeforeReading(t *testing.T) {
+	dir := changesFixture(t)
+	dump := filepath.Join(dir, "dump.sql")
+	write(t, dump, "")
+	if err := os.Truncate(dump, 8<<30); err != nil {
+		t.Skip("no sparse files here:", err)
+	}
+	if v, err := FileVersions(dir, SectionUntracked, "dump.sql"); err != nil || !v.TooLarge {
+		t.Fatalf("untracked dump: %+v %v", v, err)
+	}
+
+	big := strings.Repeat("x", maxVersionBytes+1)
+	write(t, filepath.Join(dir, "big.js"), big)
+	gitRun(t, dir, "add", "big.js")
+	write(t, filepath.Join(dir, "big.js"), "small now")
+	if v, err := FileVersions(dir, SectionUnstaged, "big.js"); err != nil || !v.TooLarge {
+		t.Fatalf("indexed blob over the limit: %+v %v", v, err)
+	}
+}
+
+// A conflict has no single index entry and a submodule no file; showing either
+// as wholly added or deleted would be a lie.
+func TestFileVersions_unreadableSides(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q")
+	write(t, filepath.Join(dir, "c"), "base\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-q", "-m", "base")
+	gitRun(t, dir, "checkout", "-q", "-b", "other")
+	write(t, filepath.Join(dir, "c"), "theirs\n")
+	gitRun(t, dir, "commit", "-q", "-am", "theirs")
+	gitRun(t, dir, "checkout", "-q", "main")
+	write(t, filepath.Join(dir, "c"), "ours\n")
+	gitRun(t, dir, "commit", "-q", "-am", "ours")
+	gitRun(t, dir, "merge", "-q", "other")
+
+	// git diff lists a conflicted path twice, as U and as M; the dashboard keys rows by path.
+	got, err := ReadChanges(dir)
+	if err != nil || len(got.Unstaged) != 1 || got.Unstaged[0] != (ChangedFile{"c", "U"}) {
+		t.Fatalf("conflict listed as %+v %v", got.Unstaged, err)
+	}
+	if v, err := FileVersions(dir, SectionUnstaged, "c"); err != nil || !v.Unreadable || v.Modified != "" {
+		t.Errorf("conflict: %+v %v", v, err)
+	}
+
+	sub := t.TempDir()
+	gitRun(t, sub, "init", "-q")
+	gitRun(t, sub, "commit", "-q", "--allow-empty", "-m", "sub")
+	head := strings.TrimSpace(gitOut(t, sub, "rev-parse", "HEAD"))
+	gitRun(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+head+",vendor/sub")
+	if v, err := FileVersions(dir, SectionStaged, "vendor/sub"); err != nil || !v.Unreadable {
+		t.Errorf("submodule: %+v %v", v, err)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := Output(dir, args...)
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return out
+}

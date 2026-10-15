@@ -1620,6 +1620,7 @@
   "gitDiff_empty": "Brak niezatwierdzonych zmian.",
   "gitDiff_binary": "Plik binarny, nie ma tekstu do porównania.",
   "gitDiff_tooLarge": "Ten plik ma ponad 1 MB, jest za duży, by go tu porównać.",
+  "gitDiff_unreadable": "Tego pliku nie można tu porównać, na przykład przy konflikcie scalania lub w submodule.",
   "gitDiff_ignoreSpace": "Ukryj białe znaki",
   "gitDiff_hideFiles": "Ukryj listę plików",
   "gitDiff_showFiles": "Pokaż listę plików",

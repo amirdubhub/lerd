@@ -15,6 +15,7 @@ export interface GitVersions {
   modified: string;
   binary: boolean;
   too_large: boolean;
+  unreadable: boolean;
 }
 
 export const SECTIONS: GitDiffSection[] = ['staged', 'unstaged', 'untracked'];

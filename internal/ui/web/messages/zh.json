@@ -1620,6 +1620,7 @@
   "gitDiff_empty": "没有未提交的更改。",
   "gitDiff_binary": "二进制文件，没有可比较的文本。",
   "gitDiff_tooLarge": "此文件超过 1 MB，太大，无法在此比较。",
+  "gitDiff_unreadable": "此文件无法在此比较，例如合并冲突或子模块。",
   "gitDiff_ignoreSpace": "隐藏空白",
   "gitDiff_hideFiles": "隐藏文件列表",
   "gitDiff_showFiles": "显示文件列表",

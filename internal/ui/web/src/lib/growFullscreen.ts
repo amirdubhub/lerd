@@ -1,10 +1,7 @@
 import { tick } from 'svelte';
 
-// growFullscreen flips a panel between its place on the page and the fixed
-// full-window overlay its classes put it in, animating the box between the two
-// so it grows rather than jumps. apply makes the switch (sets the state); the
-// panel rides fixed above the page for the 200ms in between, then its own
-// classes take over again.
+// growFullscreen animates a panel between its page layout and full screen.
+// apply switches the state; the panel stays fixed only for the 200ms between.
 export async function growFullscreen(node: HTMLElement | undefined, apply: () => void): Promise<void> {
   const still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (!node || typeof node.animate !== 'function' || still) {

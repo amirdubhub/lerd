@@ -1620,6 +1620,7 @@
   "gitDiff_empty": "コミットされていない変更はありません。",
   "gitDiff_binary": "バイナリファイルのため、比較できるテキストがありません。",
   "gitDiff_tooLarge": "このファイルは 1 MB を超えており、ここで比較するには大きすぎます。",
+  "gitDiff_unreadable": "マージの競合やサブモジュールなど、このファイルはここでは比較できません。",
   "gitDiff_ignoreSpace": "空白を無視",
   "gitDiff_hideFiles": "ファイル一覧を隠す",
   "gitDiff_showFiles": "ファイル一覧を表示",

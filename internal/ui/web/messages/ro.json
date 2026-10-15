@@ -1620,6 +1620,7 @@
   "gitDiff_empty": "Nicio modificare necomisă.",
   "gitDiff_binary": "Fișier binar, nu există text de comparat.",
   "gitDiff_tooLarge": "Fișierul depășește 1 MB, prea mare pentru a-l compara aici.",
+  "gitDiff_unreadable": "Acest fișier nu poate fi comparat aici, de exemplu într-un conflict de merge sau un submodul.",
   "gitDiff_ignoreSpace": "Ascunde spațiile",
   "gitDiff_hideFiles": "Ascunde lista de fișiere",
   "gitDiff_showFiles": "Arată lista de fișiere",

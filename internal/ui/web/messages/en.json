@@ -1620,6 +1620,7 @@
   "gitDiff_empty": "No uncommitted changes.",
   "gitDiff_binary": "Binary file, there is no text to compare.",
   "gitDiff_tooLarge": "This file is over 1 MB, too large to compare here.",
+  "gitDiff_unreadable": "This file can't be compared here, as in a merge conflict or a submodule.",
   "gitDiff_ignoreSpace": "Hide whitespace",
   "gitDiff_hideFiles": "Hide file list",
   "gitDiff_showFiles": "Show file list",

@@ -14,7 +14,7 @@ vi.mock('$components/MonacoDiffEditor.svelte', async () => ({ default: (await im
 import GitDiffModal from './GitDiffModal.svelte';
 
 const props = { domain: 'acme.test', path: '/srv/acme', branch: 'main' };
-const text = (original: string, modified: string) => ({ original, modified, binary: false, too_large: false });
+const text = (original: string, modified: string) => ({ original, modified, binary: false, too_large: false, unreadable: false });
 
 describe('GitDiffModal', () => {
   beforeEach(() => {
@@ -86,10 +86,41 @@ describe('GitDiffModal', () => {
 
   it('says why a binary file has no diff', async () => {
     loadGitChanges.mockResolvedValue({ staged: [], unstaged: [], untracked: [{ path: 'logo.png', status: '?' }] });
-    loadGitVersions.mockResolvedValue({ original: '', modified: '', binary: true, too_large: false });
+    loadGitVersions.mockResolvedValue({ original: '', modified: '', binary: true, too_large: false, unreadable: false });
     render(GitDiffModal, { props });
     expect(await screen.findByText('Binary file, there is no text to compare.')).toBeTruthy();
     expect(screen.queryByTestId('diff')).toBeNull();
+  });
+
+  it('says when git cannot hand over a file to compare', async () => {
+    loadGitChanges.mockResolvedValue({ staged: [], unstaged: [{ path: 'c.php', status: 'U' }], untracked: [] });
+    loadGitVersions.mockResolvedValue({ original: '', modified: '', binary: false, too_large: false, unreadable: true });
+    render(GitDiffModal, { props });
+    expect(await screen.findByText(/can't be compared here/)).toBeTruthy();
+    expect(screen.queryByTestId('diff')).toBeNull();
+  });
+
+  // Answers can land out of order; a failure for a file left behind must not
+  // cover the diff of the one now open.
+  it('ignores a late failure for a file no longer selected', async () => {
+    loadGitChanges.mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: 'slow.php', status: 'M' }, { path: 'fast.php', status: 'M' }],
+      untracked: []
+    });
+    let failSlow: (e: Error) => void = () => {};
+    loadGitVersions.mockImplementation((_d: string, _p: string, _s: string, file: string) =>
+      file === 'slow.php' ? new Promise((_, reject) => (failSlow = reject)) : Promise.resolve(text('a', 'fast'))
+    );
+    render(GitDiffModal, { props });
+    await waitFor(() => expect(loadGitVersions).toHaveBeenCalledWith('acme.test', '/srv/acme', 'unstaged', 'slow.php'));
+
+    await fireEvent.click(screen.getByText('fast.php'));
+    await waitFor(() => expect(screen.getByTestId('diff').dataset.modified).toBe('fast'));
+    failSlow(new Error('500 slow failed'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText('500 slow failed')).toBeNull();
+    expect(screen.getByTestId('diff').dataset.modified).toBe('fast');
   });
 
   it('says so when the tree is clean', async () => {
