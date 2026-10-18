@@ -50,6 +50,9 @@ func GenerateCustomQuadlet(svc *config.CustomService) string {
 	if svc.Init {
 		b.WriteString("PodmanArgs=--init\n")
 	}
+	if svc.ShmSize != "" {
+		fmt.Fprintf(&b, "PodmanArgs=--shm-size=%s\n", svc.ShmSize)
+	}
 
 	// Without an explicit mount podman derives /etc/hosts from the host's own,
 	// so a hand-added "127.0.0.1 lerd-<svc>" line there shadows container DNS.
@@ -122,6 +125,17 @@ func GenerateCustomQuadlet(svc *config.CustomService) string {
 		// Wrap the whole pair and escape inner quotes to preserve them.
 		escaped := strings.ReplaceAll(env[k], `"`, `\"`)
 		fmt.Fprintf(&b, "Environment=\"%s=%s\"\n", k, escaped)
+	}
+
+	// Podman secrets as environment variables keep values out of the unit file.
+	// Sorted so the quadlet is stable across regenerations.
+	secretKeys := make([]string, 0, len(svc.Secrets))
+	for k := range svc.Secrets {
+		secretKeys = append(secretKeys, k)
+	}
+	sort.Strings(secretKeys)
+	for _, k := range secretKeys {
+		fmt.Fprintf(&b, "Secret=%s,type=env,target=%s\n", svc.Secrets[k], k)
 	}
 
 	// Prefer the service's own Exec; otherwise, if its family needs a command to

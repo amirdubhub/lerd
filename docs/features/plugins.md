@@ -125,7 +125,7 @@ hello/
 
 A service shows up in the service picker beside lerd's own and is installed from there like any other; installing the plugin starts nothing. A framework is detected, listed by `lerd framework list` with the source `plugin`, and serves sites like a framework of your own. Each file's `name` must match its file name, and a framework comes as a single `<name>.yaml` with no per-version files.
 
-A plugin that ships a service must say in its README where each one comes from: the image it runs and the project that publishes it, so whoever installs the plugin knows what they are pulling before they pull it. The catalog only approves plugins that do.
+A plugin that ships a service must say in its README where each one comes from: the image it runs and the project that publishes it, so whoever installs the plugin knows what they are pulling before they pull it. The catalog only approves plugins that do. Service fields such as `shm_size` and `secrets` work the same as on a hand-rolled [custom service](../usage/custom-services.md).
 
 A plugin only adds names. One that ships a service or framework lerd already has, from itself, the store, your own definitions or another plugin, is refused at install with the names it clashes on. Should the store publish the same name later, the store's definition wins. Removing the plugin takes its definitions away, while a service you installed from it stays installed until you remove it.
 

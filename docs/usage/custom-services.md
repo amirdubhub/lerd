@@ -139,6 +139,15 @@ stop_timeout: 0                        # seconds podman waits after SIGTERM befo
                                        # (a database killed mid-checkpoint replays its WAL on
                                        # the next start). The unit gets this plus 15s.
 
+shm_size: ""                           # container /dev/shm size (podman --shm-size), e.g. 128mb
+                                       # or 1g. Empty keeps podman's default (64MB). Needed by
+                                       # images that refuse to start, or thrash, on the default.
+
+secrets:                               # map container env var -> podman secret name. Emits
+  PASSWORD: my-db-password             # Secret=<name>,type=env,target=<var> so the value never
+                                       # sits in the service YAML or an Environment= line.
+                                       # Create the secret first: podman secret create <name> -
+
 dashboard: http://localhost:8081       # URL shown as an "Open" button in the web UI
                                        # when the service is active
 

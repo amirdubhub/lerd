@@ -532,6 +532,41 @@ func TestGenerateCustomQuadlet_InitFalseOmitsPodmanArgs(t *testing.T) {
 	}
 }
 
+func TestGenerateCustomQuadlet_ShmSizeEmitsPodmanArgs(t *testing.T) {
+	svc := &config.CustomService{
+		Name:    "snapshot",
+		Image:   "example.invalid/db:1",
+		ShmSize: "128mb",
+	}
+	out := GenerateCustomQuadlet(svc)
+	if !strings.Contains(out, "PodmanArgs=--shm-size=128mb\n") {
+		t.Errorf("ShmSize must emit PodmanArgs=--shm-size, got:\n%s", out)
+	}
+}
+
+func TestGenerateCustomQuadlet_SecretsEmitEnvSecrets(t *testing.T) {
+	svc := &config.CustomService{
+		Name:  "snapshot",
+		Image: "example.invalid/db:1",
+		Secrets: map[string]string{
+			"PASSWORD": "baseshift-pass",
+			"U":        "baseshift-u",
+		},
+	}
+	out := GenerateCustomQuadlet(svc)
+	if !strings.Contains(out, "Secret=baseshift-pass,type=env,target=PASSWORD\n") {
+		t.Errorf("PASSWORD secret missing, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Secret=baseshift-u,type=env,target=U\n") {
+		t.Errorf("U secret missing, got:\n%s", out)
+	}
+	passIdx := strings.Index(out, "Secret=baseshift-pass")
+	uIdx := strings.Index(out, "Secret=baseshift-u")
+	if passIdx < 0 || uIdx < 0 || uIdx < passIdx {
+		t.Errorf("secrets must be emitted sorted by env var name (PASSWORD before U), got:\n%s", out)
+	}
+}
+
 func TestGenerateCustomQuadlet_UsernsAndChownData(t *testing.T) {
 	svc := &config.CustomService{
 		Name:      "elasticsearch",
