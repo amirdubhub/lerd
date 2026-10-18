@@ -92,40 +92,45 @@ func SetWorktreeDBIsolated(site *config.Site, branch string, isolated bool, sour
 	wtEnv := filepath.Join(wt.Path, binding.File)
 
 	if isolated {
+		// A database a plugin already made is reconnected through that plugin,
+		// even when its families no longer include this service.
+		if kept, ok, _ := config.FindWorktreeDB(site.Name, branch); ok && kept.Provider != "" {
+			p, err := plugins.Find(kept.Provider)
+			if err != nil {
+				return fmt.Errorf("database %q was made by plugin %s, which is no longer installed: %w", kept.DBName, kept.Provider, err)
+			}
+			return ensureWithPlugin(p, site, wt.Path, kept)
+		}
 		if p := plugins.ProviderOf(plugins.JobWorktreeDatabase); p != nil {
-			return isolateWithPlugin(p, site, wt.Path, branch, source, service, parentDB, dbName)
-		}
-		if _, err := CreateDatabase(service, dbName); err != nil {
-			return fmt.Errorf("creating database %q in %s: %w", dbName, service, err)
-		}
-		if cloneSrc := resolveCloneSource(site, branch, source, parentDB); cloneSrc != "" {
-			if err := CloneDatabase(service, cloneSrc, dbName); err != nil {
-				_, _ = DropDatabase(service, dbName)
-				return err
+			if spec, ok := p.Provides[plugins.JobWorktreeDatabase]; ok && spec.Covers(service) {
+				declined, err := isolateWithPlugin(p, site, wt.Path, branch, source, service, parentDB, dbName)
+				if err != nil {
+					return err
+				}
+				if !declined {
+					return nil
+				}
 			}
 		}
-		if err := config.AddWorktreeDB(config.WorktreeDBEntry{
-			Site:    site.Name,
-			Branch:  branch,
-			Service: service,
-			DBName:  dbName,
-		}); err != nil {
-			return fmt.Errorf("recording worktree db: %w", err)
-		}
-		if err := setWorktreeDBIsolatedFlag(site.Path, wt.Path, true); err != nil {
-			return err
-		}
-		if err := applyDBEnvUpdate(wtEnv, binding.Format, map[string]string{binding.NameKey: dbName}); err != nil {
-			return fmt.Errorf("rewriting worktree env: %w", err)
-		}
-		return restartWorktreeWorkersFn(site, wt.Path)
+		return isolateWithLerd(site, wt.Path, branch, source, service, parentDB, dbName, wtEnv, binding)
 	}
 
 	restore := map[string]string{binding.NameKey: parentDB}
 	if entry, removed, err := config.RemoveWorktreeDB(site.Name, branch); err == nil && removed {
 		_ = dropWorktreeDB(entry)
 		if entry.Provider != "" {
-			restore[binding.HostKey] = parentHost
+			if binding.HostKey != "" {
+				restore[binding.HostKey] = parentHost
+			}
+			if binding.PortKey != "" {
+				restore[binding.PortKey] = readParent(binding.PortKey)
+			}
+			if binding.UserKey != "" {
+				restore[binding.UserKey] = readParent(binding.UserKey)
+			}
+			if binding.PasswordKey != "" {
+				restore[binding.PasswordKey] = readParent(binding.PasswordKey)
+			}
 		}
 	}
 	if err := setWorktreeDBIsolatedFlag(site.Path, wt.Path, false); err != nil {
@@ -139,42 +144,123 @@ func SetWorktreeDBIsolated(site *config.Site, branch string, isolated bool, sour
 	return restartWorktreeWorkersFn(site, wt.Path)
 }
 
-// providedDB is what a plugin in charge of worktree databases answers create
-// with: the database it made and, when it serves it elsewhere, the host.
+// providedDB is a plugin's create or ensure answer. Decline means skip this
+// request and let lerd do the job. Password is nil when omitted, so an
+// explicit empty password can still clear the worktree's env key.
 type providedDB struct {
-	Host     string `json:"host"`
-	Database string `json:"database"`
+	Host     string  `json:"host"`
+	Database string  `json:"database"`
+	Port     string  `json:"port"`
+	Username string  `json:"username"`
+	Password *string `json:"password"`
+	Decline  bool    `json:"decline"`
 }
 
-// isolateWithPlugin hands the worktree's database to the plugin in charge of
-// it. A failure leaves the worktree sharing the parent's database rather than
-// falling back to a full copy, the cost the plugin is there to avoid.
-func isolateWithPlugin(p *plugins.Plugin, site *config.Site, wtPath, branch, source, service, parentDB, dbName string) error {
+// createDatabaseFn / cloneDatabaseFn / dropDatabaseFn are seams so tests can
+// exercise the lerd fallback without talking to podman.
+var (
+	createDatabaseFn = CreateDatabase
+	cloneDatabaseFn  = CloneDatabase
+	dropDatabaseFn   = DropDatabase
+)
+
+// isolateWithLerd creates and optionally clones the worktree database inside
+// the parent's lerd service, the path taken when no plugin is in charge or the
+// one that is has declined or does not cover this engine family.
+func isolateWithLerd(site *config.Site, wtPath, branch, source, service, parentDB, dbName, wtEnv string, binding config.DBEnvBinding) error {
+	if _, err := createDatabaseFn(service, dbName); err != nil {
+		return fmt.Errorf("creating database %q in %s: %w", dbName, service, err)
+	}
+	if cloneSrc := resolveCloneSource(site, branch, source, parentDB); cloneSrc != "" {
+		if err := cloneDatabaseFn(service, cloneSrc, dbName); err != nil {
+			_, _ = dropDatabaseFn(service, dbName)
+			return err
+		}
+	}
+	if err := config.AddWorktreeDB(config.WorktreeDBEntry{
+		Site: site.Name, Branch: branch, Service: service, DBName: dbName,
+	}); err != nil {
+		return fmt.Errorf("recording worktree db: %w", err)
+	}
+	if err := setWorktreeDBIsolatedFlag(site.Path, wtPath, true); err != nil {
+		return err
+	}
+	if err := applyDBEnvUpdate(wtEnv, binding.Format, map[string]string{binding.NameKey: dbName}); err != nil {
+		return fmt.Errorf("rewriting worktree env: %w", err)
+	}
+	return restartWorktreeWorkersFn(site, wtPath)
+}
+
+// isolateWithPlugin hands the worktree database to the plugin. A failure
+// leaves the worktree shared. Decline is the one answer that falls through
+// to lerd on purpose.
+func isolateWithPlugin(p *plugins.Plugin, site *config.Site, wtPath, branch, source, service, parentDB, dbName string) (declined bool, err error) {
 	if kept, ok, _ := config.FindWorktreeDB(site.Name, branch); ok && kept.Provider == p.Name {
-		return connectWorktreeDB(site, wtPath, kept)
+		return false, ensureWithPlugin(p, site, wtPath, kept)
 	}
 	if source == "" {
 		source = "empty"
 	}
-	out, err := p.Provide(plugins.JobWorktreeDatabase, "create", map[string]string{
+	got, err := askProvidedDB(p, "create", map[string]string{
 		"site": site.Name, "site_path": site.Path, "branch": branch, "worktree_path": wtPath,
 		"service": service, "parent_database": parentDB, "database": dbName, "source": source,
 	})
 	if err != nil {
-		return err
+		return false, err
+	}
+	if got.Decline {
+		return true, nil
+	}
+	if got.Database == "" {
+		return false, fmt.Errorf("plugin %s answered create without a database", p.Name)
+	}
+	entry := config.WorktreeDBEntry{
+		Site: site.Name, Branch: branch, Service: service, Provider: p.Name,
+		DBName: got.Database, Host: got.Host, Port: got.Port, Username: got.Username, Password: got.Password,
+	}
+	if err := config.AddWorktreeDB(entry); err != nil {
+		_ = dropWorktreeDB(entry)
+		return false, fmt.Errorf("recording worktree db: %w", err)
+	}
+	return false, connectWorktreeDB(site, wtPath, entry)
+}
+
+// askProvidedDB runs a provide action and decodes the strict create/ensure
+// answer. Unknown fields are refused by name so a plugin learns at once that
+// lerd ignored something it relied on.
+func askProvidedDB(p *plugins.Plugin, action string, request map[string]string) (providedDB, error) {
+	out, err := p.Provide(plugins.JobWorktreeDatabase, action, request)
+	if err != nil {
+		return providedDB{}, err
 	}
 	var got providedDB
 	dec := json.NewDecoder(bytes.NewReader(out))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&got); err != nil {
-		return fmt.Errorf("plugin %s answered create with %w", p.Name, err)
+		return providedDB{}, fmt.Errorf("plugin %s answered %s with %w", p.Name, action, err)
+	}
+	return got, nil
+}
+
+// ensureWithPlugin asks the plugin to make a previously provided database
+// reachable again (after a reboot, for example) and rewrites the worktree env
+// from the answer.
+func ensureWithPlugin(p *plugins.Plugin, site *config.Site, wtPath string, entry config.WorktreeDBEntry) error {
+	got, err := askProvidedDB(p, "ensure", map[string]string{
+		"site": entry.Site, "branch": entry.Branch, "service": entry.Service, "database": entry.DBName,
+	})
+	if err != nil {
+		return err
+	}
+	if got.Decline {
+		return fmt.Errorf("plugin %s declined ensure for %s/%s", p.Name, entry.Site, entry.Branch)
 	}
 	if got.Database == "" {
-		return fmt.Errorf("plugin %s answered create without a database", p.Name)
+		return fmt.Errorf("plugin %s answered ensure without a database", p.Name)
 	}
-	entry := config.WorktreeDBEntry{Site: site.Name, Branch: branch, Service: service, DBName: got.Database, Host: got.Host, Provider: p.Name}
+	entry.DBName, entry.Host, entry.Port = got.Database, got.Host, got.Port
+	entry.Username, entry.Password = got.Username, got.Password
 	if err := config.AddWorktreeDB(entry); err != nil {
-		_ = dropWorktreeDB(entry)
 		return fmt.Errorf("recording worktree db: %w", err)
 	}
 	return connectWorktreeDB(site, wtPath, entry)
@@ -187,8 +273,17 @@ func connectWorktreeDB(site *config.Site, wtPath string, entry config.WorktreeDB
 	}
 	binding := config.DBEnvBindingFor(site.Path)
 	updates := map[string]string{binding.NameKey: entry.DBName}
-	if entry.Host != "" {
+	if entry.Host != "" && binding.HostKey != "" {
 		updates[binding.HostKey] = entry.Host
+	}
+	if entry.Port != "" && binding.PortKey != "" {
+		updates[binding.PortKey] = entry.Port
+	}
+	if entry.Username != "" && binding.UserKey != "" {
+		updates[binding.UserKey] = entry.Username
+	}
+	if entry.Password != nil && binding.PasswordKey != "" {
+		updates[binding.PasswordKey] = *entry.Password
 	}
 	if err := applyDBEnvUpdate(filepath.Join(wtPath, binding.File), binding.Format, updates); err != nil {
 		return fmt.Errorf("rewriting worktree env: %w", err)
@@ -245,8 +340,15 @@ func EnsureWorktreeIsolatedDB(site *config.Site, branch, worktreePath string) (b
 	if !config.WorktreeDBIsolated(worktreePath) {
 		return false, nil
 	}
-	if _, found, _ := config.FindWorktreeDB(site.Name, branch); found {
-		return false, nil
+	if entry, found, _ := config.FindWorktreeDB(site.Name, branch); found {
+		if entry.Provider == "" {
+			return false, nil
+		}
+		p, err := plugins.Find(entry.Provider)
+		if err != nil {
+			return false, fmt.Errorf("database %q was made by plugin %s, which is no longer installed: %w", entry.DBName, entry.Provider, err)
+		}
+		return false, ensureWithPlugin(p, site, worktreePath, entry)
 	}
 	if err := SetWorktreeDBIsolated(site, branch, true, "empty"); err != nil {
 		return false, err

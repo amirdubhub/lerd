@@ -296,7 +296,11 @@ func TestDBEnvBindingFor_FallsBackToTheDefaultShape(t *testing.T) {
 
 	dir := t.TempDir()
 	got := DBEnvBindingFor(dir)
-	want := DBEnvBinding{File: ".env", Format: "dotenv", HostKey: "DB_HOST", NameKey: "DB_DATABASE"}
+	want := DBEnvBinding{
+		File: ".env", Format: "dotenv",
+		HostKey: "DB_HOST", NameKey: "DB_DATABASE",
+		PortKey: "DB_PORT", UserKey: "DB_USERNAME", PasswordKey: "DB_PASSWORD",
+	}
 	if got != want {
 		t.Errorf("DBEnvBindingFor = %+v, want %+v", got, want)
 	}
@@ -316,6 +320,9 @@ func TestDBEnvBindingFor_MagentoStyleDottedKeys(t *testing.T) {
 				"mysql": {Vars: []string{
 					"db.connection.default.host=lerd-mysql",
 					"db.connection.default.dbname={{site}}",
+					"db.connection.default.port=3306",
+					"db.connection.default.username=root",
+					"db.connection.default.password=lerd",
 				}},
 			},
 		},
@@ -326,13 +333,42 @@ func TestDBEnvBindingFor_MagentoStyleDottedKeys(t *testing.T) {
 
 	got := DBEnvBindingFor(dir)
 	want := DBEnvBinding{
-		File:    "app/etc/env.php",
-		Format:  "php-array",
-		HostKey: "db.connection.default.host",
-		NameKey: "db.connection.default.dbname",
+		File:        "app/etc/env.php",
+		Format:      "php-array",
+		HostKey:     "db.connection.default.host",
+		NameKey:     "db.connection.default.dbname",
+		PortKey:     "db.connection.default.port",
+		UserKey:     "db.connection.default.username",
+		PasswordKey: "db.connection.default.password",
 	}
 	if got != want {
 		t.Errorf("DBEnvBindingFor = %+v, want %+v", got, want)
+	}
+}
+
+func TestDBEnvBindingFor_NumericPasswordStaysAPassword(t *testing.T) {
+	setConfigDir(t)
+	installStoreFramework(t, &Framework{
+		Name: "numish",
+		Env: FrameworkEnvConf{
+			File: ".env", Format: "dotenv",
+			Services: map[string]FrameworkServiceDef{
+				"mysql": {Vars: []string{
+					"DB_HOST=lerd-mysql",
+					"DB_PORT=3306",
+					"DB_DATABASE={{site}}",
+					"DB_USERNAME=3306",
+					"DB_PASSWORD=1234",
+				}},
+			},
+		},
+	})
+	dir := t.TempDir()
+	writeProjectFile(t, dir, ".lerd.yaml", "framework: numish\n")
+
+	got := DBEnvBindingFor(dir)
+	if got.PortKey != "DB_PORT" || got.UserKey != "DB_USERNAME" || got.PasswordKey != "DB_PASSWORD" {
+		t.Errorf("DBEnvBindingFor = %+v, want port/user/password on their own keys", got)
 	}
 }
 

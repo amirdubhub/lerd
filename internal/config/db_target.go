@@ -24,14 +24,16 @@ func EnvFileFor(projectDir string) (file, format string) {
 	return fw.Env.Resolve(projectDir)
 }
 
-// DBEnvBinding describes how a project's env file addresses its database: the
-// file and format holding it, and the keys naming the host container and the
-// database itself. It is what a writer aims at; readers want DBTargetFor.
+// DBEnvBinding describes how a project's env file addresses its database.
+// Port, user and password keys are set when the framework declares them.
 type DBEnvBinding struct {
-	File    string
-	Format  string
-	HostKey string
-	NameKey string
+	File        string
+	Format      string
+	HostKey     string
+	NameKey     string
+	PortKey     string
+	UserKey     string
+	PasswordKey string
 }
 
 // DBTarget is a database a project points at: the lerd service holding it and
@@ -55,7 +57,11 @@ type dbServiceBinding struct {
 // defaultDBEnvBinding is the shape Laravel gave everyone, and what a project
 // whose framework declares no database service falls back to.
 func defaultDBEnvBinding() DBEnvBinding {
-	return DBEnvBinding{File: ".env", Format: "dotenv", HostKey: "DB_HOST", NameKey: "DB_DATABASE"}
+	return DBEnvBinding{
+		File: ".env", Format: "dotenv",
+		HostKey: "DB_HOST", NameKey: "DB_DATABASE",
+		PortKey: "DB_PORT", UserKey: "DB_USERNAME", PasswordKey: "DB_PASSWORD",
+	}
 }
 
 // frameworkFor returns the framework definition governing a project directory,
@@ -110,6 +116,12 @@ func dbEnvBindings(projectDir string) (bindings []dbServiceBinding, file, format
 				b.HostKey = key
 			case strings.Contains(val, "{{site}}") && strings.Contains(val, "lerd-"):
 				b.urlKey = key
+			case isDBUserKey(key):
+				b.UserKey = key
+			case isDBPasswordKey(key):
+				b.PasswordKey = key
+			case isPortLiteral(val):
+				b.PortKey = key
 			}
 		}
 		out = append(out, b)
@@ -321,6 +333,34 @@ func dbServiceFor(projectDir, host, declared string) string {
 		return declared
 	}
 	return ""
+}
+
+// isPortLiteral reports whether a framework env value is a bare TCP port, the
+// shape DB_PORT=3306 takes in a service vars list.
+func isPortLiteral(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isDBUserKey / isDBPasswordKey recognise the username and password keys a
+// framework publishes beside its host and database, by the suffix they share
+// across dotenv, php-const and php-array spellings.
+func isDBUserKey(k string) bool {
+	k = strings.ToLower(k)
+	return strings.HasSuffix(k, "_username") || strings.HasSuffix(k, "_user") ||
+		strings.HasSuffix(k, ".username") || strings.HasSuffix(k, ".user")
+}
+
+func isDBPasswordKey(k string) bool {
+	k = strings.ToLower(k)
+	return strings.HasSuffix(k, "_password") || strings.HasSuffix(k, ".password")
 }
 
 // isLoopbackHost reports whether a host value from an env file points back at

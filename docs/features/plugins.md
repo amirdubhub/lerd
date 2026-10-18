@@ -94,7 +94,8 @@ api:                        # served at /api/plugins/hello/greet
 requires: [jq]              # commands its scripts call, beyond the interpreters lerd reads itself
 
 provides:                   # jobs the plugin takes over from lerd, see below
-  worktree_database: bin/db
+  worktree_database: bin/db # bare form still works
+  # or: worktree_database: {run: bin/db, timeout: 30m, families: [postgres, mysql]}
 
 ui:                         # files live under ui/, the only folder the dashboard serves
   page:     {title: Hello, icon: ui/icon.svg, entry: ui/index.html}
@@ -139,20 +140,40 @@ A plugin can declare itself in charge of a job lerd normally does, under `provid
 
 Whenever a worktree gets a database of its own, from `lerd worktree add`, `lerd db:isolate`, the dashboard or an assistant, lerd runs the plugin's executable instead of creating and copying the database itself. It is meant for tools that branch a database copy-on-write, where lerd's own copy is a full dump and import.
 
-The executable runs as `bin/db create` or `bin/db drop`, with the request as JSON on stdin and each field also as `LERD_<FIELD>`:
+The declaration may be the executable alone, or an object:
 
-| Field | create | drop |
-|---|---|---|
-| `site`, `branch` | the site and the worktree's branch | same |
-| `service` | the lerd service holding the parent's database, like `mysql` | same |
-| `database` | the name lerd would have used | the database to drop |
-| `parent_database` | the parent site's database | |
-| `source` | `empty`, `main`, or the branch whose isolated database to copy | |
-| `site_path`, `worktree_path` | the two checkouts | |
+```yaml
+provides:
+  worktree_database: bin/db
+  # or
+  worktree_database:
+    run: bin/db
+    timeout: 30m              # longer than the 5 minute default, up to 30m
+    families: [postgres, mysql]  # optional; omit to cover every engine
+```
 
-`create` prints a JSON object with the `database` it made and, when it serves that database somewhere other than the parent's service, the `host` to reach it on. Lerd writes both into the worktree's env file under the keys the framework declares, so env stays with the site, and records the plugin as the database's owner. Any other field in the answer is refused by name. Sharing the parent's database again, or removing the worktree, runs `drop` with the database `create` answered.
+When `families` is set, a parent database whose service is outside that list is left to lerd without calling the plugin. Family names match the service family (`postgres`, `mysql`, `mariadb`, `mongo`).
 
-When `create` fails, the worktree keeps sharing the parent's database and the error carries what the plugin wrote to stderr. Lerd never falls back to a full copy on its own. Lerd's database tools, such as snapshots and the database shell, still work only on databases a lerd service holds.
+The executable runs as `bin/db create`, `bin/db drop` or `bin/db ensure`, with the request as JSON on stdin and each field also as `LERD_<FIELD>`:
+
+| Field | create | drop | ensure |
+|---|---|---|---|
+| `site`, `branch` | the site and the worktree's branch | same | same |
+| `service` | the lerd service holding the parent's database, like `mysql` | same | same |
+| `database` | the name lerd would have used | the database to drop | the database to reattach |
+| `parent_database` | the parent site's database | | |
+| `source` | `empty`, `main`, or the branch whose isolated database to copy | | |
+| `site_path`, `worktree_path` | the two checkouts | | |
+
+`create` and `ensure` print a JSON object. Required: `database`. Optional: `host`, `port`, `username`, `password` when the database is served somewhere other than the parent's service. Lerd writes each into the worktree's env file under the keys the framework declares (for example `DB_HOST` / `DB_PORT` / `DB_USERNAME` / `DB_PASSWORD`, or Magento's dotted equivalents), so env stays with the site, and records the plugin as the database's owner. Any other field in the answer is refused by name.
+
+To skip a request without failing, answer `{"decline": true}`. Lerd then creates and copies the database itself, the same way it would with no plugin installed. Use that for a site or engine the plugin cannot handle when `families` is not enough. Decline is only for `create`; on `ensure` it is an error.
+
+`ensure` runs when a worktree that already has a plugin-owned database is scanned or reused (after a reboot, for example), so the plugin can bring the process back and return a possibly updated host or port. Sharing the parent's database again, or removing the worktree, runs `drop` with the database `create` answered, and restores the parent's host, port, username and password keys.
+
+When `create` fails, the worktree keeps sharing the parent's database and the error carries what the plugin wrote to stderr. Lerd never falls back to a full copy on a failure, only on an explicit decline. Lerd's database tools, such as snapshots and the database shell, still work only on databases a lerd service holds.
+
+A database a plugin serves on the host must be reachable from PHP-FPM containers. On Linux, `host.containers.internal` is the host gateway, not loopback, so a process bound only to `127.0.0.1` is not reachable; listen on an address the container network can route to, or run the database on the `lerd` network.
 
 ---
 
@@ -188,9 +209,9 @@ Every surface but the CLI stops an executable that runs past its limit and recor
 | API endpoints | 30s | 10m |
 | MCP tools | 2m | 10m |
 | Site commands | 30m | 1h |
-| Jobs under `provides` | 5m | fixed |
+| Jobs under `provides` | 5m | 30m |
 
-`timeout` takes a duration like `90s` or `10m` on a single site command, MCP tool or API endpoint. A value past the ceiling refuses the plugin with a message naming it.
+`timeout` takes a duration like `90s` or `10m` on a single site command, MCP tool, API endpoint or provides job. A value past the ceiling refuses the plugin with a message naming it.
 
 ### Which language
 

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -66,6 +68,40 @@ func TestWorktreeDBRegistry_removeReturnsEntry(t *testing.T) {
 	_, stillFound, _ := FindWorktreeDB("acme", "feat-a")
 	if stillFound {
 		t.Errorf("entry still in registry after Remove")
+	}
+}
+
+func TestWorktreeDBRegistry_passwordFileIsPrivate(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	path := WorktreeDBRegistryPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("worktree_dbs: []\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pass := "s3cret"
+	if err := AddWorktreeDB(WorktreeDBEntry{Site: "acme", Branch: "feat", Service: "mysql", DBName: "db", Password: &pass}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("mode = %o, want 0600", info.Mode().Perm())
+	}
+	got, found, err := FindWorktreeDB("acme", "feat")
+	if err != nil || !found || got.Password == nil || *got.Password != "s3cret" {
+		t.Fatalf("password round trip = %+v found=%v err=%v", got.Password, found, err)
+	}
+	empty := ""
+	if err := AddWorktreeDB(WorktreeDBEntry{Site: "acme", Branch: "feat", Service: "mysql", DBName: "db", Password: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err = FindWorktreeDB("acme", "feat")
+	if err != nil || !found || got.Password == nil || *got.Password != "" {
+		t.Fatalf("empty password not preserved: %+v found=%v err=%v", got.Password, found, err)
 	}
 }
 
