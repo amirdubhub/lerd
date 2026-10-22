@@ -532,6 +532,18 @@ func TestGenerateCustomQuadlet_InitFalseOmitsPodmanArgs(t *testing.T) {
 	}
 }
 
+func TestGenerateCustomQuadlet_ShmSizeEmitsPodmanArgs(t *testing.T) {
+	svc := &config.CustomService{
+		Name:    "snapshot",
+		Image:   "example.invalid/db:1",
+		ShmSize: "128mb",
+	}
+	out := GenerateCustomQuadlet(svc)
+	if !strings.Contains(out, "PodmanArgs=--shm-size=128mb\n") {
+		t.Errorf("ShmSize must emit PodmanArgs=--shm-size, got:\n%s", out)
+	}
+}
+
 func TestGenerateCustomQuadlet_UsernsAndChownData(t *testing.T) {
 	svc := &config.CustomService{
 		Name:      "elasticsearch",

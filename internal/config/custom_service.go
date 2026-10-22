@@ -17,7 +17,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var validServiceName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+var (
+	validServiceName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	validShmSize     = regexp.MustCompile(`(?i)^[1-9][0-9]*([kmgt]i?b?|[b])?$`)
+)
 
 // EnvDetect defines auto-detection rules for `lerd env`.
 type EnvDetect struct {
@@ -323,6 +326,9 @@ type CustomService struct {
 	// buffer pool) declare a longer one; past this window the process is killed
 	// mid-write and the next start pays for it in crash recovery.
 	StopTimeout int `yaml:"stop_timeout,omitempty" json:"stop_timeout,omitempty"`
+	// ShmSize sets the container's /dev/shm (podman --shm-size), for images
+	// that need more than the default 64MB. Empty leaves podman's default.
+	ShmSize string `yaml:"shm_size,omitempty" json:"shm_size,omitempty"`
 	// ClientShims lists the client tools this service exposes as host shims
 	// (mysqldump, pg_dump, psql…) so host tools and IDEs can run them against
 	// external databases. Empty for services with nothing to expose.
@@ -925,6 +931,7 @@ func ValidateCustomService(svc *CustomService) error {
 		"image": svc.Image, "exec": svc.Exec, "userns": svc.Userns,
 		"data_dir": svc.DataDir, "description": svc.Description,
 		"dashboard": svc.Dashboard, "connection_url": svc.ConnectionURL,
+		"shm_size": svc.ShmSize,
 	}
 	if svc.SiteInit != nil {
 		scalars["site_init.exec"] = svc.SiteInit.Exec
@@ -933,6 +940,9 @@ func ValidateCustomService(svc *CustomService) error {
 		if ContainsUnitInjectionChars(v) {
 			return fmt.Errorf("invalid %s for service %q: must not contain newline or NUL", label, svc.Name)
 		}
+	}
+	if svc.ShmSize != "" && !validShmSize.MatchString(svc.ShmSize) {
+		return fmt.Errorf("invalid shm_size %q for service %q: want a size like 128mb or 1g", svc.ShmSize, svc.Name)
 	}
 	for _, p := range svc.Ports {
 		if ContainsUnitInjectionChars(p) {

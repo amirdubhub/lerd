@@ -50,6 +50,9 @@ func GenerateCustomQuadlet(svc *config.CustomService) string {
 	if svc.Init {
 		b.WriteString("PodmanArgs=--init\n")
 	}
+	if svc.ShmSize != "" {
+		fmt.Fprintf(&b, "PodmanArgs=--shm-size=%s\n", svc.ShmSize)
+	}
 
 	// Without an explicit mount podman derives /etc/hosts from the host's own,
 	// so a hand-added "127.0.0.1 lerd-<svc>" line there shadows container DNS.

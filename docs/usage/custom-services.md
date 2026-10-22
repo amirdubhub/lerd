@@ -139,6 +139,9 @@ stop_timeout: 0                        # seconds podman waits after SIGTERM befo
                                        # (a database killed mid-checkpoint replays its WAL on
                                        # the next start). The unit gets this plus 15s.
 
+shm_size: ""                           # container /dev/shm (podman --shm-size), e.g. 128mb
+                                       # or 1g. Empty keeps podman's default of 64MB.
+
 dashboard: http://localhost:8081       # URL shown as an "Open" button in the web UI
                                        # when the service is active
 

@@ -300,6 +300,17 @@ func TestValidateCustomService_allowsClean(t *testing.T) {
 	}
 }
 
+func TestValidateCustomService_shmSize(t *testing.T) {
+	ok := &CustomService{Name: "ok", Image: "alpine", ShmSize: "128mb"}
+	if err := ValidateCustomService(ok); err != nil {
+		t.Fatalf("clean shm_size rejected: %v", err)
+	}
+	bad := &CustomService{Name: "bad", Image: "alpine", ShmSize: "128 mb"}
+	if err := ValidateCustomService(bad); err == nil || !strings.Contains(err.Error(), "shm_size") {
+		t.Fatalf("err = %v, want shm_size named", err)
+	}
+}
+
 func TestCustomServiceExists(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
