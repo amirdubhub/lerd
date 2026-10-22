@@ -36,7 +36,7 @@ func ProviderOf(job string) *Plugin {
 // request as JSON on stdin, and returns what it printed. A failure carries
 // what the plugin wrote to stderr, since that is the only reason anyone gets.
 func (p *Plugin) Provide(job, action string, request map[string]string) ([]byte, error) {
-	run, ok := p.Provides[job]
+	spec, ok := p.Provides[job]
 	if !ok {
 		return nil, fmt.Errorf("plugin %s is not in charge of %s", p.Name, job)
 	}
@@ -44,7 +44,7 @@ func (p *Plugin) Provide(job, action string, request map[string]string) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	cmd, err := p.Command(run, SurfaceProvide, []string{action}, Env(request))
+	cmd, err := p.Command(spec.Run, SurfaceProvide, []string{action}, Env(request))
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (p *Plugin) Provide(job, action string, request map[string]string) ([]byte,
 	cmd.Stdin = bytes.NewReader(body)
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
-	err = RunWithin(cmd, provideLimit)
+	err = RunWithin(cmd, spec.Limit())
 	if err != nil {
 		Failed(Failure{Plugin: p.Name, Surface: SurfaceProvide, What: job + " " + action, Error: strings.TrimSpace(stderr.String() + "\n" + err.Error())})
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {

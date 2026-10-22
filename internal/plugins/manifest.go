@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/geodro/lerd/internal/config"
 	"gopkg.in/yaml.v3"
@@ -34,15 +35,65 @@ type Manifest struct {
 	MCP          *MCP              `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 	API          []Endpoint        `yaml:"api,omitempty" json:"api,omitempty"`
 	UI           *UI               `yaml:"ui,omitempty" json:"ui,omitempty"`
-	// Provides maps each job the plugin takes over from lerd to the executable
-	// lerd runs for it.
-	Provides map[string]string `yaml:"provides,omitempty" json:"provides,omitempty"`
+	// Provides maps each job the plugin takes over from lerd to how it runs.
+	// A value may be the executable alone, or an object with run, timeout
+	// and families. See ProvideSpec.
+	Provides map[string]ProvideSpec `yaml:"provides,omitempty" json:"provides,omitempty"`
 	// Requires names the commands the plugin's scripts call beyond their own
 	// interpreters, which lerd reads from each script's first line.
 	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
 	// Platforms lists where the plugin runs, linux or macos; empty means both.
 	Platforms []string `yaml:"platforms,omitempty" json:"platforms,omitempty"`
 }
+
+// ProvideSpec is one job a plugin takes over. A bare executable string still
+// means run with the default limit and every engine family.
+type ProvideSpec struct {
+	Run     string `yaml:"run" json:"run"`
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	// Families, when set, limits the job to those database families.
+	// Empty means every family. A service outside the list is left to lerd.
+	Families []string `yaml:"families,omitempty" json:"families,omitempty"`
+}
+
+// UnmarshalYAML accepts either a bare executable string or a full object.
+func (s *ProvideSpec) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var run string
+		if err := value.Decode(&run); err != nil {
+			return err
+		}
+		*s = ProvideSpec{Run: run}
+		return nil
+	}
+	type raw ProvideSpec
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
+	}
+	*s = ProvideSpec(r)
+	return nil
+}
+
+// Covers reports whether this job applies to a lerd database service name.
+func (s ProvideSpec) Covers(service string) bool {
+	if len(s.Families) == 0 {
+		return true
+	}
+	family := config.FamilyOfName(service)
+	if family == "" {
+		return false
+	}
+	for _, f := range s.Families {
+		if f == family {
+			return true
+		}
+	}
+	return false
+}
+
+// Limit is how long the job may run, defaulting to provideLimit.
+func (s ProvideSpec) Limit() time.Duration { return limitOr(s.Timeout, provideLimit) }
 
 // Command is a CLI command, invoked as `lerd <plugin>:<name>`.
 type Command struct {
@@ -187,12 +238,23 @@ func (p *Plugin) validate() error {
 	if err := p.validateAPI(); err != nil {
 		return err
 	}
-	for job, run := range p.Provides {
+	for job, spec := range p.Provides {
 		if !jobs[job] {
 			return fmt.Errorf("provides unknown job %q", job)
 		}
-		if err := p.checkExecutable(run); err != nil {
+		if spec.Run == "" {
+			return fmt.Errorf("provides %q needs a run executable", job)
+		}
+		if err := p.checkExecutable(spec.Run); err != nil {
 			return err
+		}
+		if err := checkLimit(spec.Timeout, maxProvideLimit); err != nil {
+			return fmt.Errorf("provides %q: %w", job, err)
+		}
+		for _, f := range spec.Families {
+			if !nameRe.MatchString(f) {
+				return fmt.Errorf("provides %q has invalid family %q", job, f)
+			}
 		}
 	}
 	if err := p.checkRequirements(); err != nil {

@@ -18,6 +18,7 @@ const (
 	// An entry may ask for longer with timeout:, up to these.
 	maxSiteCommandLimit = time.Hour
 	maxEntryLimit       = 10 * time.Minute
+	maxProvideLimit     = 30 * time.Minute
 )
 
 // hookLimit stops a hung hook from holding up the operation that fired it, and

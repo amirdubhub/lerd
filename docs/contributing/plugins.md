@@ -21,7 +21,7 @@ A job is something lerd does that a plugin can do instead, declared under `provi
 2. Find the one function every path to that job goes through and hand off there with `plugins.ProviderOf`, the way `SetWorktreeDBIsolated` does for `worktree_database`. A job reached from several places without a shared function is not ready to hand off.
 3. Define the request and the answer as a contract. The request goes in as JSON on stdin with the action as the first argument. The answer is decoded strictly, refusing any field lerd does not know, so a plugin learns at once that lerd ignored something it relied on.
 4. Record which plugin did the job wherever lerd needs to undo it later, so the undo goes back through the same plugin even after another plugin is installed.
-5. When the plugin fails, report what it wrote to stderr and leave things as they were. Never fall back to lerd's own way silently: the plugin is there because lerd's own way was wrong for that user.
+5. When the plugin fails, report what it wrote to stderr and leave things as they were. Never fall back to lerd's own way silently: the plugin is there because lerd's own way was wrong for that user. An explicit decline in the answer is the exception, the plugin is saying this request is not hers.
 6. Document the job in `docs/features/plugins.md` under *Taking over a job from lerd*, with a table of its request fields and the answer it expects.
 
 ## Compatibility
