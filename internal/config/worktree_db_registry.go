@@ -15,10 +15,13 @@ type WorktreeDBEntry struct {
 	Branch  string `yaml:"branch"`
 	Service string `yaml:"service"`
 	DBName  string `yaml:"db_name"`
-	// Provider is the plugin that made the database, which also drops it, and
-	// Host where it serves it when that is not the service.
-	Provider string `yaml:"provider,omitempty"`
-	Host     string `yaml:"host,omitempty"`
+	// Provider is the plugin that made the database, and Host where it serves it.
+	// Password is nil when the answer omitted it, so an empty password is kept.
+	Provider string  `yaml:"provider,omitempty"`
+	Host     string  `yaml:"host,omitempty"`
+	Port     string  `yaml:"port,omitempty"`
+	Username string  `yaml:"username,omitempty"`
+	Password *string `yaml:"password,omitempty"`
 }
 
 type worktreeDBRegistry struct {
@@ -61,16 +64,23 @@ func saveWorktreeDBRegistryLocked(entries []WorktreeDBEntry) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
+	var data []byte
 	if len(entries) == 0 {
-		guardRealWrite(path)
-		return os.WriteFile(path, []byte("worktree_dbs: []\n"), 0644)
-	}
-	data, err := yaml.Marshal(worktreeDBRegistry{Entries: entries})
-	if err != nil {
-		return err
+		data = []byte("worktree_dbs: []\n")
+	} else {
+		var err error
+		data, err = yaml.Marshal(worktreeDBRegistry{Entries: entries})
+		if err != nil {
+			return err
+		}
 	}
 	guardRealWrite(path)
-	return os.WriteFile(path, data, 0644)
+	// 0600: an entry can hold a plugin database password. WriteFile leaves an
+	// existing file's mode alone, so chmod tightens one an older lerd wrote.
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0600)
 }
 
 // AddWorktreeDB inserts or updates an entry by (site, branch).

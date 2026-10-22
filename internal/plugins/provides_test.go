@@ -105,3 +105,38 @@ func TestProvide_FailureCarriesWhatThePluginSaid(t *testing.T) {
 		t.Errorf("recorded %+v %v", f, ok)
 	}
 }
+
+func TestReadPlugin_ProvideSpecObjectForm(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "p", `api_version: 1
+name: p
+provides:
+  worktree_database:
+    run: bin/run
+    timeout: 10m
+    families: [postgres, mysql]
+`)
+	p, err := ReadPlugin(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := p.Provides[JobWorktreeDatabase]
+	if spec.Run != "bin/run" || spec.Timeout != "10m" || len(spec.Families) != 2 {
+		t.Fatalf("spec = %+v", spec)
+	}
+	if !spec.Covers("postgres") || spec.Covers("mongo") {
+		t.Errorf("Covers postgres=%v mongo=%v", spec.Covers("postgres"), spec.Covers("mongo"))
+	}
+}
+
+func TestReadPlugin_ProvideTimeoutPastCeiling(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "p", `api_version: 1
+name: p
+provides:
+  worktree_database:
+    run: bin/run
+    timeout: 2h
+`)
+	if _, err := ReadPlugin(dir); err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("err = %v, want timeout named", err)
+	}
+}

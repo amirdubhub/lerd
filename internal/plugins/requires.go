@@ -56,8 +56,8 @@ func (p *Plugin) executables() []string {
 	for _, e := range p.API {
 		out = append(out, e.Run)
 	}
-	for _, run := range p.Provides {
-		out = append(out, run)
+	for _, spec := range p.Provides {
+		out = append(out, spec.Run)
 	}
 	return out
 }
